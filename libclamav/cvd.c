@@ -504,8 +504,7 @@ struct cl_cvd *cl_cvdhead(const char *file)
     if ((pt = strpbrk(head, "\n\r")))
         *pt = 0;
 
-    for (i = bread - 1; i > 0 && (head[i] == ' ' || head[i] == '\n' || head[i] == '\r'); head[i] = 0, i--)
-        ;
+    for (i = bread - 1; i > 0 && (head[i] == ' ' || head[i] == '\n' || head[i] == '\r'); head[i] = 0, i--);
 
     return cl_cvdparse(head);
 }
@@ -527,57 +526,103 @@ void cl_cvdfree(struct cl_cvd *cvd)
  * @param skipsig       If non-zero, skip the signature verification.
  * @return cl_error_t   CL_SUCCESS on success. CL_ECVD, CL_EMEM, or CL_EVERIFY on error.
  */
-static cl_error_t cli_cvdverify(FILE *fs, struct cl_cvd *cvdpt, unsigned int skipsig)
+static cl_error_t cli_cvdverify(FILE *fs, struct cl_cvd *cvdpt, unsigned int skipsig, const char *certs_directory)
 {
-    struct cl_cvd *cvd;
-    char *md5, head[513];
+    cl_error_t status  = CL_ECVD;
+    struct cl_cvd *cvd = NULL;
+    char *md5          = NULL;
+    char *signfile     = NULL;
+    char head[513];
     int i;
+    cl_error_t cvd_verify_ret;
+    FFIError *sign_check_error = NULL;
 
     fseek(fs, 0, SEEK_SET);
     if (fread(head, 1, 512, fs) != 512) {
         cli_errmsg("cli_cvdverify: Can't read CVD header\n");
-        return CL_ECVD;
+        goto done;
     }
 
     head[512] = 0;
-    for (i = 511; i > 0 && (head[i] == ' ' || head[i] == 10); head[i] = 0, i--)
-        ;
+    for (i = 511; i > 0 && (head[i] == ' ' || head[i] == 10); head[i] = 0, i--);
 
     if ((cvd = cl_cvdparse(head)) == NULL)
-        return CL_ECVD;
+        goto done;
 
     if (cvdpt)
         memcpy(cvdpt, cvd, sizeof(struct cl_cvd));
 
+    // Check if we should skip signature verification
     if (skipsig) {
-        cl_cvdfree(cvd);
-        return CL_SUCCESS;
+        status = CL_SUCCESS;
+        goto done;
     }
 
-    md5 = cli_hashstream(fs, NULL, 1);
-    if (md5 == NULL) {
-        cli_dbgmsg("cli_cvdverify: Cannot generate hash, out of memory\n");
-        cl_cvdfree(cvd);
-        return CL_EMEM;
-    }
-    cli_dbgmsg("MD5(.tar.gz) = %s\n", md5);
+    file_signature_t *file_signature = NULL;
 
-    if (strncmp(md5, cvd->md5, 32)) {
-        cli_dbgmsg("cli_cvdverify: MD5 verification error\n");
-        free(md5);
-        cl_cvdfree(cvd);
-        return CL_EVERIFY;
+    // Check if the CVD file has a signature that we can verify,
+    // depending on available public keys and supported algorithms.
+    if (!cli_check_if_file_signed(filename, certs_directory, &file_signature, &sign_check_error)) {
+        cli_errmsg(
+            "cli_cvdverify: Error checking if file is signed: %s\n",
+            ffierror_fmt(sign_check_error));
+        status = CL_EVERIFY;
+        goto done;
     }
 
-    if (cli_versig(md5, cvd->dsig)) {
-        cli_dbgmsg("cli_cvdverify: Digital signature verification error\n");
-        free(md5);
-        cl_cvdfree(cvd);
-        return CL_EVERIFY;
+    // If the file signature exists, verify it
+    if (file_signature != NULL) {
+        if (!cli_verify_file_signature(file_signature, &sign_check_error)) {
+            cli_errmsg(
+                "cli_cvdverify: Error verifying file signature: %s\n",
+                ffierror_fmt(sign_check_error));
+            status = CL_EVERIFY;
+            goto done;
+        }
+    }
+    cvd_verify_ret = cli_verify_signed_file(filename, certs_directory, &sign_check_error);
+    if (cvd_verify_ret == CL_EVERIFY) {
+
+        cli_errmsg(
+            "Failed to check if '%s' is signed: %s\n",
+            filename, ffierror_fmt(sign_check_error));
+
+        status = CL_EVERIFY;
+        goto done;
+
+    } else if (cvd_verify_ret == CL_EOPEN) {
+        // External sign file missing or public key for verification not found.
+        // Try to verify the signature using the internal MD5-based public key.
+
+        md5 = cli_hashstream(fs, NULL, 1);
+        if (md5 == NULL) {
+            cli_dbgmsg("cli_cvdverify: Cannot generate hash, out of memory\n");
+            status = CL_EMEM;
+            goto done;
+        }
+        cli_dbgmsg("MD5(.tar.gz) = %s\n", md5);
+
+        if (strncmp(md5, cvd->md5, 32)) {
+            cli_dbgmsg("cli_cvdverify: MD5 verification error\n");
+            status = CL_EVERIFY;
+            goto done;
+        }
+
+        if (cli_versig(md5, cvd->dsig)) {
+            cli_dbgmsg("cli_cvdverify: Digital signature verification error\n");
+            status = CL_EVERIFY;
+            goto done;
+        }
     }
 
+    status = CL_SUCCESS;
+
+done:
+    free(signfile);
     free(md5);
-    cl_cvdfree(cvd);
+    if (NULL != cvd) {
+        cl_cvdfree(cvd);
+    }
     return CL_SUCCESS;
 }
 
@@ -612,7 +657,7 @@ cl_error_t cl_cvdverify(const char *file)
     return ret;
 }
 
-cl_error_t cli_cvdload(FILE *fs, struct cl_engine *engine, unsigned int *signo, unsigned int options, unsigned int dbtype, const char *filename, unsigned int chkonly)
+cl_error_t cli_cvdload(FILE *fs, struct cl_engine *engine, unsigned int *signo, unsigned int options, unsigned int dbtype, const char *filename, unsigned int chkonly, const char *certs_directory)
 {
     struct cl_cvd cvd, dupcvd;
     FILE *dupfs;
@@ -627,8 +672,8 @@ cl_error_t cli_cvdload(FILE *fs, struct cl_engine *engine, unsigned int *signo, 
 
     cli_dbgmsg("in cli_cvdload()\n");
 
-    /* verify */
-    if ((ret = cli_cvdverify(fs, &cvd, dbtype)))
+    /* load the cvd header and (optionally) verify the digital signature */
+    if ((ret = cli_cvdverify(fs, &cvd, dbtype, certs_directory)))
         return ret;
 
     if (dbtype <= 1) {
@@ -638,7 +683,7 @@ cl_error_t cli_cvdload(FILE *fs, struct cl_engine *engine, unsigned int *signo, 
             return CL_EMEM;
         dupname[strlen(dupname) - 2] = (dbtype == 1 ? 'v' : 'l');
         if (!access(dupname, R_OK) && (dupfs = fopen(dupname, "rb"))) {
-            if ((ret = cli_cvdverify(dupfs, &dupcvd, !dbtype))) {
+            if ((ret = cli_cvdverify(dupfs, &dupcvd, !dbtype, certs_directory))) {
                 fclose(dupfs);
                 free(dupname);
                 return ret;
@@ -742,7 +787,7 @@ static cl_error_t cli_cvdunpack(const char *file, const char *dir)
     return ret;
 }
 
-cl_error_t cl_cvdunpack(const char *file, const char *dir, bool dont_verify)
+cl_error_t cl_cvdunpack(const char *file, const char *dir, bool dont_verify, const char *certs_directory)
 {
     cl_error_t status = CL_SUCCESS;
     FILE *fs          = NULL;
@@ -755,7 +800,7 @@ cl_error_t cl_cvdunpack(const char *file, const char *dir, bool dont_verify)
     }
 
     if (!dont_verify) {
-        status = cli_cvdverify(fs, NULL, 0);
+        status = cli_cvdverify(fs, NULL, 0, certs_directory);
         if (CL_SUCCESS != status) {
             cli_errmsg("CVD verification failed for: %s\n", file);
             goto done;
@@ -776,7 +821,7 @@ done:
     return status;
 }
 
-static cl_error_t cvdgetfileage(const char *path, time_t *age_seconds)
+static cl_error_t cvdgetfileage(const char *path, time_t *age_seconds, const char *certs_directory)
 {
     struct cl_cvd cvd;
     time_t s_time;
@@ -788,7 +833,7 @@ static cl_error_t cvdgetfileage(const char *path, time_t *age_seconds)
         return CL_EOPEN;
     }
 
-    if ((status = cli_cvdverify(fs, &cvd, 1)) != CL_SUCCESS)
+    if ((status = cli_cvdverify(fs, &cvd, 1, certs_directory)) != CL_SUCCESS)
         goto done;
 
     time(&s_time);

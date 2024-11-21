@@ -1179,6 +1179,12 @@ extern "C" {
     ) -> cl_error_t;
 }
 extern "C" {
+    pub fn cli_versig(
+        sha256: *const ::std::os::raw::c_uchar,
+        dsig_str: *const ::std::os::raw::c_char,
+    ) -> ::std::os::raw::c_int;
+}
+extern "C" {
     pub fn cli_versig2(
         sha256: *const ::std::os::raw::c_uchar,
         dsig_str: *const ::std::os::raw::c_char,

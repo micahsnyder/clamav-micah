@@ -57,7 +57,7 @@ use std::{
 ///    result: *mut i64,
 ///    err: *mut *mut FFIError,
 /// ) -> bool {
-///    frs_call!(out = result, err = err, checked_div(numerator, denominator))
+///    rrf_call!(out = result, err = err, checked_div(numerator, denominator))
 /// }
 /// ```
 ///
