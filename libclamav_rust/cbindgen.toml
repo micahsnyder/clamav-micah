@@ -21,6 +21,7 @@ exclude = []
 include = [
   "cdiff::cdiff_apply",
   "cdiff::script2cdiff",
+  "cvd::cli_check_cvd",
   "fuzzy_hash::fuzzy_hash_calculate_image",
   "fuzzy_hash::fuzzy_hash_load_subsignature",
   "fuzzy_hash::fuzzy_hash_check",

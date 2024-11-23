@@ -10,13 +10,11 @@ use std::{
 use flate2::read::GzDecoder;
 use hex;
 use log::{debug, warn};
-use tar::Archive;
 
 use crate::{
+    codesign, ffi_error,
     ffi_util::FFIError,
-    sys,
-    {rrf_call, validate_str_param},
-    codesign,
+    sys, {rrf_call, validate_str_param},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -32,7 +30,7 @@ pub enum Error {
     #[error("Can't verify: {0}")]
     CannotVerify(String),
 
-    #[error("Signature verification failed")]
+    #[error("Signature verification failed: signature is invalid")]
     VerifyFailed,
 
     #[error("IO error: {0}")]
@@ -221,23 +219,23 @@ impl CVD {
             })?
             .filter_map(|e| e.ok())
             .map(|mut entry| -> Result<PathBuf, Error> {
-                let filepath = entry.path().map_err(|e| {
+                let file_path = entry.path().map_err(|e| {
                     Error::Parse(format!(
                         "Failed to get path for file in signature archive: {}",
                         e.to_string()
                     ))
                 })?;
-                let filename = filepath.file_name().ok_or_else(|| {
+                let filename = file_path.file_name().ok_or_else(|| {
                     Error::Parse("Failed to get filename from archive entry".to_string())
                 })?;
-                let destination_filepath = path.join(filename);
-                entry.unpack(&destination_filepath).map_err(|e| {
+                let destination_file_path = path.join(filename);
+                entry.unpack(&destination_file_path).map_err(|e| {
                     Error::Parse(format!(
                         "Failed to unpack file from signature archive: {}",
                         e.to_string()
                     ))
                 })?;
-                Ok(destination_filepath)
+                Ok(destination_file_path)
             })
             .filter_map(|e| e.ok())
             .for_each(|x| println!("> {}", x.display()));
@@ -300,30 +298,101 @@ impl CVD {
         Ok(true)
     }
 
-    pub fn verify(&mut self, certs_directory: &Path, disable_md5: bool) -> Result<(), Error> {
+    pub fn verify(&mut self, certs_directory: &Path, disable_md5: bool) -> Result<bool, Error> {
+        // First try to verify the CVD with the detached signature file.
 
-        let ext_sign_fileext = if let Some(ext) = self.path.extension() {
-            format!(".{}.sign", ext.to_string_lossy())
-        } else {
-            ".sign".to_string()
-        };
-        let ext_sign_filepath = self.path.with_extension(ext_sign_fileext);
+        // The signature file for a CVD should be "databasename-<version>.cvd.sign"
+        // This is true regardless of whethe ror not the CVD filename has a version number in it.
+        self.
 
-        match File::open(&ext_sign_filepath) {
-            Ok(ext_sig_file) => {
-                debug!("External signature file exists: {:?}", ext_sign_filepath);
-
-
+        match codesign::verify_signed_file(&self.path, certs_directory) {
+            Ok(()) => {
+                debug!("Detached CVD signature verification succeeded");
+                return Ok(true);
             }
-            Err(_) => {
-                debug!("External signature file does not exist: {:?}", ext_sign_filepath);
+            Err(codesign::Error::InvalidSignature(m)) => {
+                warn!("Detached CVD signature verification failed: {}", m);
+                return Ok(false);
+            }
+            Err(e) => {
+                warn!("Detached CVD signature verification failed: {}", e);
             }
         }
 
-        if !disable_md5 {
-            self.verify_rsa_dsig()?;
+        if disable_md5 {
+            debug!("Unable to verify CVD with detached signature file and MD5 verification is disabled");
+            return Ok(false);
         }
 
-        Ok(())
+        // Fall back to verifying with the MD5-based attached RSA digital signature
+        self.verify_rsa_dsig()
+    }
+}
+
+/// C interface for checking a CVD. This includes parsing the header, and (optionally) verifying the digital signature.
+/// Handles all the unsafe ffi stuff.
+///
+/// # Safety
+///
+/// No parameters may be NULL
+#[export_name = "cli_check_cvd"]
+pub unsafe extern "C" fn cli_check_cvd(
+    cvd_file_path_str: *const c_char,
+    certs_directory_str: *const c_char,
+    skip_sign_verify: bool,
+    disable_md5: bool,
+    err: *mut *mut FFIError,
+) -> bool {
+    let cvd_file_path_str = validate_str_param!(cvd_file_path_str);
+    let cvd_file_path = match Path::new(cvd_file_path_str).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return ffi_error!(
+                err = err,
+                Error::CannotVerify(format!("Invalid CVD file path: {}", e))
+            );
+        }
+    };
+
+    let certs_directory_str = validate_str_param!(certs_directory_str);
+    let certs_directory = match Path::new(certs_directory_str).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return ffi_error!(
+                err = err,
+                Error::CannotVerify(format!("Invalid certs directory path: {}", e))
+            );
+        }
+    };
+
+    match CVD::from_file(&cvd_file_path) {
+        Ok(mut cvd) => {
+            if skip_sign_verify {
+                debug!("CVD parsed successfully, but we're skipping signature verification.");
+                return true;
+            }
+
+            match cvd.verify(&certs_directory, disable_md5) {
+                Ok(true) => {
+                    println!("CVD verified successfully");
+                    return true;
+                }
+                Ok(false) => {
+                    return ffi_error!(err = err, Error::VerifyFailed);
+                }
+                Err(e) => {
+                    return ffi_error!(
+                        err = err,
+                        Error::CannotVerify(format!("Failed to verify CVD: {}", e))
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            return ffi_error!(
+                err = err,
+                Error::CannotVerify(format!("Failed to parse CVD: {}", e))
+            );
+        }
     }
 }

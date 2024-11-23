@@ -43,6 +43,7 @@
 #include <errno.h>
 
 #include "clamav.h"
+#include "clamav_rust.h"
 #include "others.h"
 #include "dsig.h"
 #include "str.h"
@@ -529,28 +530,8 @@ void cl_cvdfree(struct cl_cvd *cvd)
 static cl_error_t cli_cvdverify(FILE *fs, struct cl_cvd *cvdpt, unsigned int skipsig, const char *certs_directory)
 {
     cl_error_t status  = CL_ECVD;
-    struct cl_cvd *cvd = NULL;
-    char *md5          = NULL;
-    char *signfile     = NULL;
-    char head[513];
-    int i;
     cl_error_t cvd_verify_ret;
     FFIError *sign_check_error = NULL;
-
-    fseek(fs, 0, SEEK_SET);
-    if (fread(head, 1, 512, fs) != 512) {
-        cli_errmsg("cli_cvdverify: Can't read CVD header\n");
-        goto done;
-    }
-
-    head[512] = 0;
-    for (i = 511; i > 0 && (head[i] == ' ' || head[i] == 10); head[i] = 0, i--);
-
-    if ((cvd = cl_cvdparse(head)) == NULL)
-        goto done;
-
-    if (cvdpt)
-        memcpy(cvdpt, cvd, sizeof(struct cl_cvd));
 
     // Check if we should skip signature verification
     if (skipsig) {
@@ -558,71 +539,19 @@ static cl_error_t cli_cvdverify(FILE *fs, struct cl_cvd *cvdpt, unsigned int ski
         goto done;
     }
 
-    file_signature_t *file_signature = NULL;
-
-    // Check if the CVD file has a signature that we can verify,
-    // depending on available public keys and supported algorithms.
-    if (!cli_check_if_file_signed(filename, certs_directory, &file_signature, &sign_check_error)) {
-        cli_errmsg(
-            "cli_cvdverify: Error checking if file is signed: %s\n",
-            ffierror_fmt(sign_check_error));
-        status = CL_EVERIFY;
-        goto done;
-    }
-
-    // If the file signature exists, verify it
-    if (file_signature != NULL) {
-        if (!cli_verify_file_signature(file_signature, &sign_check_error)) {
-            cli_errmsg(
-                "cli_cvdverify: Error verifying file signature: %s\n",
-                ffierror_fmt(sign_check_error));
-            status = CL_EVERIFY;
-            goto done;
-        }
-    }
-    cvd_verify_ret = cli_verify_signed_file(filename, certs_directory, &sign_check_error);
+    cvd_verify_ret = cli_check_cvd(filename, certs_directory, false, false, &sign_check_error);
     if (cvd_verify_ret == CL_EVERIFY) {
-
         cli_errmsg(
-            "Failed to check if '%s' is signed: %s\n",
+            "CVD verification failed: %s\n",
             filename, ffierror_fmt(sign_check_error));
 
         status = CL_EVERIFY;
         goto done;
-
-    } else if (cvd_verify_ret == CL_EOPEN) {
-        // External sign file missing or public key for verification not found.
-        // Try to verify the signature using the internal MD5-based public key.
-
-        md5 = cli_hashstream(fs, NULL, 1);
-        if (md5 == NULL) {
-            cli_dbgmsg("cli_cvdverify: Cannot generate hash, out of memory\n");
-            status = CL_EMEM;
-            goto done;
-        }
-        cli_dbgmsg("MD5(.tar.gz) = %s\n", md5);
-
-        if (strncmp(md5, cvd->md5, 32)) {
-            cli_dbgmsg("cli_cvdverify: MD5 verification error\n");
-            status = CL_EVERIFY;
-            goto done;
-        }
-
-        if (cli_versig(md5, cvd->dsig)) {
-            cli_dbgmsg("cli_cvdverify: Digital signature verification error\n");
-            status = CL_EVERIFY;
-            goto done;
-        }
     }
 
     status = CL_SUCCESS;
 
 done:
-    free(signfile);
-    free(md5);
-    if (NULL != cvd) {
-        cl_cvdfree(cvd);
-    }
     return CL_SUCCESS;
 }
 

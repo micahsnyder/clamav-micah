@@ -1179,6 +1179,9 @@ extern "C" {
     ) -> cl_error_t;
 }
 extern "C" {
+    pub fn cl_retflevel() -> ::std::os::raw::c_uint;
+}
+extern "C" {
     pub fn cli_versig(
         sha256: *const ::std::os::raw::c_uchar,
         dsig_str: *const ::std::os::raw::c_char,

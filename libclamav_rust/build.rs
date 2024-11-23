@@ -42,6 +42,7 @@ const WINDOWS_TRIM_LOCAL_LIB: &[&str] = &["libclamav", "libclammspack"];
 
 // Generate bindings for these functions:
 const BINDGEN_FUNCTIONS: &[&str] = &[
+    "cl_retflevel",
     "cli_ctx",
     "cli_warnmsg",
     "cli_dbgmsg_no_inline",

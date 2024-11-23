@@ -29,6 +29,7 @@ delharc = "0.6"
 clam-sigutil = { path = "../../clamav-signature-util" }
 tar = "0.4.43"
 md5 = "0.7.0"
+openssl = "0.10.68"
 
 [features]
 not_ready = []
