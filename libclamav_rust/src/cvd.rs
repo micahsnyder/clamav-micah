@@ -2,7 +2,11 @@ use std::{
     ffi::{CStr, CString},
     fs::File,
     io::{prelude::*, BufReader},
-    os::raw::c_char,
+    mem::ManuallyDrop,
+    os::{
+        fd::AsRawFd,
+        raw::{c_char, c_void},
+    },
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
@@ -12,9 +16,8 @@ use hex;
 use log::{debug, warn};
 
 use crate::{
-    codesign, ffi_error,
-    ffi_util::FFIError,
-    sys, {rrf_call, validate_str_param},
+    codesign, ffi_error, ffi_error_null, ffi_util::FFIError, sys, validate_optional_str_param,
+    validate_str_param, validate_str_param_null,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -24,14 +27,17 @@ pub enum Error {
     #[error("Error parsing CVD file: {0}")]
     Parse(String),
 
-    #[error("Incorrect digital signature")]
-    InvalidDigitalSignature,
+    #[error("Error verifying signature: {0}")]
+    InvalidDigitalSignature(String),
 
     #[error("Can't verify: {0}")]
     CannotVerify(String),
 
     #[error("Signature verification failed: signature is invalid")]
     VerifyFailed,
+
+    #[error("Unpacking error: {0}")]
+    UnpackFailed(String),
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
@@ -96,33 +102,35 @@ impl CVD {
             ));
         }
 
-        let time_bytes = fields
-            .next()
-            .ok_or_else(|| Error::Parse("Invalid CVD file: Missing creation time".to_string()))?;
-        let time_str = std::str::from_utf8(time_bytes)
-            .map_err(|_| Error::Parse("Time string is not valid unicode".to_string()))?;
-        let time_seconds: u64 = time_str
-            .parse()
-            .map_err(|_| Error::Parse("Time string is not an unsigned integer".to_string()))?;
-        let time_creation = SystemTime::UNIX_EPOCH + Duration::from_secs(time_seconds);
+        let _ = fields.next().ok_or_else(|| {
+            Error::Parse("Invalid CVD file: Missing creation time stamp".to_string())
+        })?;
+        // let time_str = std::str::from_utf8(time_bytes)
+        //     .map_err(|_| Error::Parse("Time string is not valid unicode".to_string()))?;
 
         let version_bytes = fields
             .next()
             .ok_or_else(|| Error::Parse("Invalid CVD file: Missing version".to_string()))?;
         let version_str = std::str::from_utf8(version_bytes)
             .map_err(|_| Error::Parse("Version string is not valid unicode".to_string()))?;
-        let version: u32 = version_str
-            .parse()
-            .map_err(|_| Error::Parse("Version string is not an unsigned integer".to_string()))?;
+        let version: u32 = version_str.parse().map_err(|_| {
+            Error::Parse(format!(
+                "Version string is not an unsigned integer: {}",
+                version_str
+            ))
+        })?;
 
         let num_sigs_bytes = fields.next().ok_or_else(|| {
             Error::Parse("Invalid CVD file: Missing number of signatures".to_string())
         })?;
         let num_sigs_str = std::str::from_utf8(num_sigs_bytes)
             .map_err(|_| Error::Parse("Signature Count string is not valid unicode".to_string()))?;
-        let num_sigs: u32 = num_sigs_str
-            .parse()
-            .map_err(|_| Error::Parse("Signature count is not an unsigned integer".to_string()))?;
+        let num_sigs: u32 = num_sigs_str.parse().map_err(|_| {
+            Error::Parse(format!(
+                "Signature count is not an unsigned integer: {}",
+                num_sigs_str
+            ))
+        })?;
 
         let min_flevel_bytes = fields.next().ok_or_else(|| {
             Error::Parse("Invalid CVD file: Missing minimum feature level".to_string())
@@ -131,7 +139,10 @@ impl CVD {
             Error::Parse("Minimum Functionality Level string is not valid unicode".to_string())
         })?;
         let min_flevel: u32 = min_flevel_str.parse().map_err(|_| {
-            Error::Parse("Minimum Functionality Level is not an unsigned integer".to_string())
+            Error::Parse(format!(
+                "Minimum Functionality Level is not an unsigned integer: {}",
+                min_flevel_str
+            ))
         })?;
 
         let md5_bytes = fields.next().ok_or_else(|| {
@@ -167,9 +178,9 @@ impl CVD {
 
         // the rsa dsig field might be empty or like just 'x'
         let rsa_dsig = if rsa_dsig_str.len() > 1 {
-            None
-        } else {
             Some(rsa_dsig_str)
+        } else {
+            None
         };
 
         let builder_bytes = fields
@@ -178,6 +189,21 @@ impl CVD {
         let builder = std::str::from_utf8(builder_bytes)
             .map_err(|_| Error::Parse("Builder string is not valid unicode".to_string()))?
             .to_string();
+
+        let time_bytes = fields
+            .next()
+            .ok_or_else(|| Error::Parse("Invalid CVD file: Missing creation time".to_string()))?;
+        let time_str = std::str::from_utf8(time_bytes)
+            .map_err(|_| Error::Parse("Time string is not valid unicode".to_string()))?;
+        // trim any trailing whitespace, since this is the last field and the rest should be padding
+        let time_str = time_str.trim_end();
+        let time_seconds: u64 = time_str.parse().map_err(|_| {
+            Error::Parse(format!(
+                "Time string is not an unsigned integer: {}",
+                time_str
+            ))
+        })?;
+        let time_creation = SystemTime::UNIX_EPOCH + Duration::from_secs(time_seconds);
 
         Ok(Self {
             time_creation,
@@ -225,6 +251,11 @@ impl CVD {
                         e.to_string()
                     ))
                 })?;
+                if file_path.ancestors().count() > 0 {
+                    return Err(Error::UnpackFailed(
+                        "Directories are not supported".to_string(),
+                    ));
+                }
                 let filename = file_path.file_name().ok_or_else(|| {
                     Error::Parse("Failed to get filename from archive entry".to_string())
                 })?;
@@ -243,7 +274,7 @@ impl CVD {
         Ok(())
     }
 
-    pub fn verify_rsa_dsig(&mut self) -> Result<bool, Error> {
+    pub fn verify_rsa_dsig(&mut self) -> Result<(), Error> {
         let mut file_bytes = Vec::<u8>::new();
 
         self.file
@@ -265,7 +296,9 @@ impl CVD {
         if let Some(md5) = &self.md5 {
             if calculated_md5 != &md5[..] {
                 warn!("MD5 hash does not match the expected hash");
-                return Ok(false);
+                return Err(Error::InvalidDigitalSignature(
+                    "MD5 hash does not match the expected hash".to_string(),
+                ));
             }
         } else {
             debug!("MD5 hash is not present in the CVD file");
@@ -274,7 +307,7 @@ impl CVD {
         if let Some(rsa_dsig) = &self.rsa_dsig {
             debug!("RSA digital signature: {:?}", rsa_dsig);
 
-            // cli_versig2 will expect dsig to be a null-terminated string
+            // versig2 will expect dsig to be a null-terminated string
             let dsig_cstring = CString::new(rsa_dsig.as_bytes()).map_err(|_| {
                 Error::Parse("Failed to convert RSA digital signature to CString".to_string())
             })?;
@@ -283,45 +316,91 @@ impl CVD {
             let versig_result =
                 unsafe { sys::cli_versig(calculated_md5.as_ptr(), dsig_cstring.as_ptr()) };
 
-            debug!("verify_rsa_dsig: cli_versig() result = {}", versig_result);
+            debug!("verify_rsa_dsig: versig() result = {}", versig_result);
             if versig_result != 0 {
                 warn!("RSA digital signature verification failed");
-                return Err(Error::InvalidDigitalSignature);
+                return Err(Error::InvalidDigitalSignature(
+                    "RSA digital signature verification failed".to_string(),
+                ));
             }
 
             debug!("RSA digital signature verification succeeded");
         } else {
             warn!("RSA digital signature is not present in the CVD file");
-            return Ok(false);
+            return Err(Error::InvalidDigitalSignature(
+                "RSA digital signature is not present in the CVD file".to_string(),
+            ));
         }
 
-        Ok(true)
+        Ok(())
     }
 
-    pub fn verify(&mut self, certs_directory: &Path, disable_md5: bool) -> Result<bool, Error> {
-        // First try to verify the CVD with the detached signature file.
+    pub fn verify_external_sign_file(&mut self, certs_directory: &Path) -> Result<(), Error> {
+        let database_directory = self.path.parent().ok_or_else(|| {
+            Error::Parse("Failed to get database directory from CVD file path".to_string())
+        })?;
 
         // The signature file for a CVD should be "databasename-<version>.cvd.sign"
         // This is true regardless of whethe ror not the CVD filename has a version number in it.
-        self.
+        let database_file_stem = self.path.file_stem().ok_or_else(|| {
+            Error::Parse("Failed to get database file stem from CVD file path".to_string())
+        })?;
+        let database_file_stem_str = database_file_stem
+            .to_str()
+            .ok_or_else(|| Error::Parse("Database file stem is not valid unicode".to_string()))?;
+        let database_name = database_file_stem_str
+            .split(|c| c == '-' || c == '.')
+            .next()
+            .ok_or_else(|| {
+                Error::Parse("Failed to get database name from database file stem".to_string())
+            })?;
 
-        match codesign::verify_signed_file(&self.path, certs_directory) {
+        let signature_file_name = format!("{}-{}.cvd.sign", database_name, self.version);
+        let signature_file_path = database_directory.join(signature_file_name);
+
+        match codesign::verify_signed_file(&self.path, &signature_file_path, certs_directory) {
             Ok(()) => {
                 debug!("Detached CVD signature verification succeeded");
-                return Ok(true);
+                return Ok(());
             }
-            Err(codesign::Error::InvalidSignature(m)) => {
-                warn!("Detached CVD signature verification failed: {}", m);
-                return Ok(false);
+            Err(codesign::Error::InvalidDigitalSignature(m)) => {
+                warn!("Detached CVD signature is invalid: {}", m);
+                return Err(Error::InvalidDigitalSignature(m));
             }
             Err(e) => {
                 warn!("Detached CVD signature verification failed: {}", e);
+                return Err(Error::CannotVerify(e.to_string()));
             }
+        }
+    }
+
+    pub fn verify(
+        &mut self,
+        certs_directory: Option<PathBuf>,
+        disable_md5: bool,
+    ) -> Result<(), Error> {
+        // First try to verify the CVD with the detached signature file.
+        // If that fails, fall back to verifying with the MD5-based attached RSA digital signature.
+        if let Some(certs_directory) = certs_directory {
+            match self.verify_external_sign_file(&certs_directory) {
+                Ok(()) => {
+                    debug!("CVD verified successfully with detached signature file");
+                    return Ok(());
+                }
+                Err(Error::InvalidDigitalSignature(e)) => {
+                    warn!("Detached CVD signature is invalid: {}", e);
+                }
+                Err(e) => {
+                    warn!("Failed to verify CVD with detached signature file: {}", e);
+                }
+            }
+        } else {
+            debug!("No certs directory provided. Skipping external signature verification.");
         }
 
         if disable_md5 {
-            debug!("Unable to verify CVD with detached signature file and MD5 verification is disabled");
-            return Ok(false);
+            warn!("Unable to verify CVD with detached signature file and MD5 verification is disabled");
+            return Err(Error::CannotVerify("Unable to verify CVD with detached signature file and MD5 verification is disabled".to_string()));
         }
 
         // Fall back to verifying with the MD5-based attached RSA digital signature
@@ -335,8 +414,8 @@ impl CVD {
 /// # Safety
 ///
 /// No parameters may be NULL
-#[export_name = "cli_check_cvd"]
-pub unsafe extern "C" fn cli_check_cvd(
+#[export_name = "cvd_check"]
+pub unsafe extern "C" fn cvd_check(
     cvd_file_path_str: *const c_char,
     certs_directory_str: *const c_char,
     skip_sign_verify: bool,
@@ -372,19 +451,13 @@ pub unsafe extern "C" fn cli_check_cvd(
                 return true;
             }
 
-            match cvd.verify(&certs_directory, disable_md5) {
-                Ok(true) => {
+            match cvd.verify(Some(certs_directory), disable_md5) {
+                Ok(()) => {
                     println!("CVD verified successfully");
                     return true;
                 }
-                Ok(false) => {
-                    return ffi_error!(err = err, Error::VerifyFailed);
-                }
                 Err(e) => {
-                    return ffi_error!(
-                        err = err,
-                        Error::CannotVerify(format!("Failed to verify CVD: {}", e))
-                    );
+                    return ffi_error!(err = err, e);
                 }
             }
         }
@@ -395,4 +468,232 @@ pub unsafe extern "C" fn cli_check_cvd(
             );
         }
     }
+}
+
+/// C interface for unpacking a CVD. This includes parsing the header, verifying the digital signature, and unpacking the archive.
+/// Handles all the unsafe ffi stuff.
+///
+/// # Safety
+///
+/// No parameters may be NULL
+/// The CVD pointer must be valid
+/// The destination path must be a valid path
+#[export_name = "cvd_unpack"]
+pub unsafe extern "C" fn cvd_unpack(
+    cvd: *mut c_void,
+    destination_path_str: *const c_char,
+    err: *mut *mut FFIError,
+) -> bool {
+    let mut cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
+
+    let destination_path_str = validate_str_param!(destination_path_str);
+    let destination_path = match Path::new(destination_path_str).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return ffi_error!(
+                err = err,
+                Error::CannotVerify(format!("Invalid destination path: {}", e))
+            );
+        }
+    };
+
+    match cvd.unpack_to(&destination_path) {
+        Ok(()) => {
+            println!("CVD unpacked successfully");
+            true
+        }
+        Err(e) => {
+            ffi_error!(err = err, e);
+            false
+        }
+    }
+}
+
+/// C interface for opening a CVD file. This includes parsing the header.
+/// Handles all the unsafe ffi stuff.
+/// Returns a pointer to the CVD struct.
+///
+/// # Safety
+///
+/// No parameters may be NULL
+/// The returned pointer must be freed with `cli_cvd_free`
+#[export_name = "cvd_open"]
+pub unsafe extern "C" fn cvd_open(
+    cvd_file_path_str: *const c_char,
+    err: *mut *mut FFIError,
+) -> *mut c_void {
+    let cvd_file_path_str = validate_str_param_null!(cvd_file_path_str);
+    let cvd_file_path = match Path::new(cvd_file_path_str).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return ffi_error_null!(
+                err = err,
+                Error::CannotVerify(format!("Invalid CVD file path: {}", e))
+            );
+        }
+    };
+
+    match CVD::from_file(&cvd_file_path) {
+        Ok(cvd) => Box::into_raw(Box::<CVD>::new(cvd)) as *mut CVD as sys::cvd_t,
+        Err(e) => {
+            return ffi_error_null!(
+                err = err,
+                Error::CannotVerify(format!("Failed to parse CVD: {}", e))
+            );
+        }
+    }
+}
+
+/// C interface for verifying a CVD. This includes verifying the digital signature.
+/// Handles all the unsafe ffi stuff.
+///
+/// If `certs_directory_str` is NULL, then only the MD5-based RSA digital signature will be verified.
+///
+/// # Safety
+///
+/// No parameters may be NULL except for `certs_directory_str`.
+/// The CVD pointer must be valid
+#[export_name = "cvd_verify"]
+pub unsafe extern "C" fn cvd_verify(
+    cvd: *const c_void,
+    certs_directory_str: *const c_char,
+    disable_md5: bool,
+    err: *mut *mut FFIError,
+) -> bool {
+    let mut cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
+
+    let certs_directory_str = validate_optional_str_param!(certs_directory_str);
+    let certs_directory = match certs_directory_str {
+        Some(c) => match Path::new(c).canonicalize() {
+            Ok(p) => Some(p),
+            Err(e) => {
+                return ffi_error!(
+                    err = err,
+                    Error::CannotVerify(format!("Invalid certs directory path: {}", e))
+                );
+            }
+        },
+        None => {
+            warn!("No certs directory provided. Skipping signature verification.");
+            None
+        }
+    };
+
+    match cvd.verify(certs_directory, disable_md5) {
+        Ok(()) => {
+            println!("CVD verified successfully");
+            true
+        }
+        Err(e) => {
+            ffi_error!(err = err, e);
+            false
+        }
+    }
+}
+
+/// C interface for freeing a CVD struct.
+/// Handles all the unsafe ffi stuff.
+/// Frees the CVD struct.
+///
+/// # Safety
+///
+/// The CVD pointer must be valid
+/// The CVD pointer must not be used after calling this function
+#[export_name = "cvd_free"]
+pub unsafe extern "C" fn cvd_free(cvd: *mut c_void) {
+    if cvd.is_null() {
+        warn!("Attempted to free a NULL CVD pointer. Please report this at: https://github.com/Cisco-Talos/clamav/issues");
+    } else {
+        let _ = unsafe { Box::from_raw(cvd as *mut CVD) };
+    }
+}
+
+/// C interface for getting the creation time of a CVD.
+/// Handles all the unsafe ffi stuff.
+/// Returns the creation time as a u64.
+///
+/// # Safety
+///
+/// No parameters may be NULL
+/// The CVD pointer must be valid
+#[export_name = "cvd_get_time_creation"]
+pub unsafe extern "C" fn cvd_get_time_creation(cvd: *const c_void) -> u64 {
+    let cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
+    cvd.time_creation
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// C interface for getting the version of a CVD.
+/// Handles all the unsafe ffi stuff.
+/// Returns the version as a u32.
+///
+/// # Safety
+///
+/// No parameters may be NULL
+/// The CVD pointer must be valid
+#[export_name = "cvd_get_version"]
+pub unsafe extern "C" fn cvd_get_version(cvd: *const c_void) -> u32 {
+    let cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
+    cvd.version
+}
+
+/// C interface for getting the number of signatures in a CVD.
+/// Handles all the unsafe ffi stuff.
+/// Returns the number of signatures as a u32.
+///
+/// # Safety
+///
+/// No parameters may be NULL
+/// The CVD pointer must be valid
+#[export_name = "cvd_get_num_sigs"]
+pub unsafe extern "C" fn cvd_get_num_sigs(cvd: *const c_void) -> u32 {
+    let cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
+    cvd.num_sigs
+}
+
+/// C interface for getting the minimum feature level of a CVD.
+/// Handles all the unsafe ffi stuff.
+/// Returns the minimum feature level as a u32.
+///
+/// # Safety
+///
+/// No parameters may be NULL
+/// The CVD pointer must be valid
+#[export_name = "cvd_get_min_flevel"]
+pub unsafe extern "C" fn cvd_get_min_flevel(cvd: *const c_void) -> u32 {
+    let cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
+    cvd.min_flevel
+}
+
+/// C interface for getting the CVD builder.
+/// Handles all the unsafe ffi stuff.
+/// Returns the builder as a CString.
+/// The caller is responsible for freeing the CString. See `ffi_cstring_free`.
+///
+/// # Safety
+///
+/// No parameters may be NULL
+/// The CVD pointer must be valid
+#[export_name = "cvd_get_builder"]
+pub unsafe extern "C" fn cvd_get_builder(cvd: *const c_void) -> *const c_char {
+    let cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
+    CString::new(cvd.builder.clone()).unwrap().into_raw()
+}
+
+/// C interface for getting the file handle of a CVD.
+/// Handles all the unsafe ffi stuff.
+/// Returns the file handle an integer.
+/// The caller must not close the file handle.
+/// The file handle is not guaranteed to be valid after the CVD struct is freed.
+///
+/// # Safety
+///
+/// No parameters may be NULL
+/// The CVD pointer must be valid
+#[export_name = "cvd_get_file"]
+pub unsafe extern "C" fn cvd_get_file(cvd: *const c_void) -> i32 {
+    let cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
+    cvd.file.as_raw_fd()
 }

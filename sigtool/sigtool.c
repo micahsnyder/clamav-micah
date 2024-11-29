@@ -1242,7 +1242,7 @@ static int build(const struct optstruct *opts)
         return -1;
     }
 
-    if (CL_SUCCESS != cl_cvdunpack(olddb, pt, true)) {
+    if (CL_SUCCESS != cl_cvdunpack_ex(olddb, pt, true, NULL)) {
         mprintf(LOGG_ERROR, "build: Can't unpack CVD file %s\n", olddb);
         removeTempDir(opts, pt);
         free(pt);
@@ -1257,7 +1257,7 @@ static int build(const struct optstruct *opts)
         return -1;
     }
 
-    if (CL_SUCCESS != cl_cvdunpack(newcvd, pt, true)) {
+    if (CL_SUCCESS != cl_cvdunpack_ex(newcvd, pt, true, NULL)) {
         mprintf(LOGG_ERROR, "build: Can't unpack CVD file %s\n", newcvd);
         removeTempDir(opts, pt);
         free(pt);
@@ -1330,7 +1330,7 @@ static int unpack(const struct optstruct *opts)
         return -1;
     }
 
-    if (CL_SUCCESS != cl_cvdunpack(name, ".", true)) {
+    if (CL_SUCCESS != cl_cvdunpack_ex(name, ".", true, NULL)) {
         mprintf(LOGG_ERROR, "unpack: Can't unpack file %s\n", name);
         return -1;
     }
@@ -1477,7 +1477,7 @@ static int listdb(const struct optstruct *opts, const char *filename, const rege
             return -1;
         }
 
-        if (CL_SUCCESS != cl_cvdunpack(filename, dir, true)) {
+        if (CL_SUCCESS != cl_cvdunpack_ex(filename, dir, true, NULL)) {
             mprintf(LOGG_ERROR, "listdb: Can't unpack CVD file %s\n", filename);
             removeTempDir(opts, dir);
             free(dir);
@@ -2239,7 +2239,7 @@ static int verifydiff(const struct optstruct *opts, const char *diff, const char
     }
 
     if (cvd) {
-        if (CL_SUCCESS != cl_cvdunpack(cvd, tempdir, true)) {
+        if (CL_SUCCESS != cl_cvdunpack_ex(cvd, tempdir, true, NULL)) {
             mprintf(LOGG_ERROR, "verifydiff: Can't unpack CVD file %s\n", cvd);
             removeTempDir(opts, tempdir);
             free(tempdir);
@@ -3458,7 +3458,7 @@ static int makediff(const struct optstruct *opts)
         return -1;
     }
 
-    if (CL_SUCCESS != cl_cvdunpack(optget(opts, "diff")->strarg, odir, true)) {
+    if (CL_SUCCESS != cl_cvdunpack_ex(optget(opts, "diff")->strarg, odir, true, NULL)) {
         mprintf(LOGG_ERROR, "makediff: Can't unpack CVD file %s\n", optget(opts, "diff")->strarg);
         removeTempDir(opts, odir);
         free(odir);
@@ -3469,7 +3469,7 @@ static int makediff(const struct optstruct *opts)
         return -1;
     }
 
-    if (CL_SUCCESS != cl_cvdunpack(opts->filename[0], ndir, true)) {
+    if (CL_SUCCESS != cl_cvdunpack_ex(opts->filename[0], ndir, true, NULL)) {
         mprintf(LOGG_ERROR, "makediff: Can't unpack CVD file %s\n", opts->filename[0]);
         removeTempDir(opts, odir);
         removeTempDir(opts, ndir);

@@ -41,6 +41,17 @@ struct cli_dbio {
     void *hashctx;
 };
 
-cl_error_t cli_cvdload(FILE *fs, struct cl_engine *engine, unsigned int *signo, unsigned int options, unsigned int dbtype, const char *filename, unsigned int chkonly);
+typedef enum cvd_type {
+    // signed signature archive
+    CVD_TYPE_CVD = 0,
+    // unsigned signature archive that was updated from a CVD or CUD
+    CVD_TYPE_CLD = 1,
+    // unsigned signature archive
+    CVD_TYPE_CUD = 2,
+} cvd_type;
+
+typedef void *cvd_t;
+
+cl_error_t cli_cvdload(struct cl_engine *engine, unsigned int *signo, unsigned int options, cvd_type dbtype, const char *filename, unsigned int chkonly);
 
 #endif

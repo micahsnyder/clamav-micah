@@ -88,6 +88,7 @@ char _CONFDIR_MILTER[MAX_PATH]    = BACKUP_CONFDIR "\\clamav-milter.conf";
 
 #define CONST_DATADIR _DATADIR
 #define CONST_CONFDIR _CONFDIR
+#define CONST_CERTSDIR _CERTSDIR
 #define CONST_CONFDIR_CLAMD _CONFDIR_CLAMD
 #define CONST_CONFDIR_FRESHCLAM _CONFDIR_FRESHCLAM
 #define CONST_CONFDIR_MILTER _CONFDIR_MILTER
@@ -96,6 +97,7 @@ char _CONFDIR_MILTER[MAX_PATH]    = BACKUP_CONFDIR "\\clamav-milter.conf";
 
 #define CONST_DATADIR DATADIR
 #define CONST_CONFDIR CONFDIR
+#define CONST_CERTSDIR CERTSDIR
 #define CONST_CONFDIR_CLAMD CONFDIR_CLAMD
 #define CONST_CONFDIR_FRESHCLAM CONFDIR_FRESHCLAM
 #define CONST_CONFDIR_MILTER CONFDIR_MILTER
@@ -279,6 +281,8 @@ const struct clam_option __clam_options[] = {
     {"TemporaryDirectory", "tempdir", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_CLAMD | OPT_MILTER | OPT_CLAMSCAN | OPT_SIGTOOL, "This option allows you to change the default temporary directory.", "/tmp"},
 
     {"DatabaseDirectory", "datadir", 0, CLOPT_TYPE_STRING, NULL, -1, CONST_DATADIR, 0, OPT_CLAMD | OPT_FRESHCLAM | OPT_SIGTOOL, "This option allows you to change the default database directory.\nIf you enable it, please make sure it points to the same directory in\nboth clamd and freshclam.", "/var/lib/clamav"},
+
+    {"CVDCertsDirectory", "certsdir", 0, CLOPT_TYPE_STRING, NULL, -1, CONST_CERTSDIR, 0, OPT_CLAMD | OPT_FRESHCLAM | OPT_SIGTOOL, "This option allows you to change the default ClamAV CA certificates directory used to verify database external digital signatures.\nIf you enable it, please make sure it points to the same directory in\nboth clamd and freshclam.", "/etc/clamav/certs"},
 
     {"OfficialDatabaseOnly", "official-db-only", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "Only load the official signatures published by the ClamAV project.", "no"},
 

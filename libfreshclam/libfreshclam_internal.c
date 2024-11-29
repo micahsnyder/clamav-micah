@@ -109,6 +109,7 @@ char *g_proxyPassword = NULL;
 
 char *g_tempDirectory     = NULL;
 char *g_databaseDirectory = NULL;
+char *g_certsDirectory    = NULL;
 
 uint32_t g_maxAttempts    = 0;
 uint32_t g_connectTimeout = 0;
@@ -1611,7 +1612,7 @@ static fc_error_t mkdir_and_chdir_for_cdiff_tmp(const char *database, const char
         /*
          * 3) Unpack the existing CVD/CLD database to this directory.
          */
-        if (CL_SUCCESS != cl_cvdunpack(cvdfile, tmpdir, is_cld == true)) {
+        if (CL_SUCCESS != cl_cvdunpack_ex(cvdfile, tmpdir, is_cld == true, g_certsDirectory)) {
             logg(LOGG_ERROR, "mkdir_and_chdir_for_cdiff_tmp: Can't unpack %s into %s\n", cvdfile, tmpdir);
             cli_rmdirs(tmpdir);
             goto done;

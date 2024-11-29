@@ -1147,9 +1147,11 @@ extern cl_error_t cl_cvdverify(const char *file);
 extern void cl_cvdfree(struct cl_cvd *cvd);
 
 /**
- * @brief Unpack a CVD file.
+ * @brief Unpack a CVD file. (deprecated)
  *
  * Will verify the CVD is correctly signed unless the `dont_verify` parameter is true.
+ *
+ * This function is deprecated. Use cl_cvdunpack_ex() instead.
  *
  * @param file          Filepath of CVD file.
  * @param dir           Destination directory.
@@ -1157,6 +1159,19 @@ extern void cl_cvdfree(struct cl_cvd *cvd);
  * @return cl_error_t   CL_SUCCESS if success, else a CL_E* error code.
  */
 extern cl_error_t cl_cvdunpack(const char *file, const char *dir, bool dont_verify);
+
+/**
+ * @brief Unpack a CVD file.
+ *
+ * Will verify the CVD is correctly signed unless the `dont_verify` parameter is true.
+ *
+ * @param file              Filepath of CVD file.
+ * @param dir               Destination directory.
+ * @param dont_verify       If true, don't verify the CVD.
+ * @param certs_directory   Path where ClamAV public certs are located, needed to verify external digital signatures.
+ * @return cl_error_t       CL_SUCCESS if success, else a CL_E* error code.
+ */
+extern cl_error_t cl_cvdunpack_ex(const char *file, const char *dir, bool dont_verify, const char *certs_directory);
 
 /**
  * @brief Retrieve the age of CVD disk data.

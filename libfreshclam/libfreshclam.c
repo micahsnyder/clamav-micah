@@ -249,6 +249,34 @@ fc_error_t fc_initialize(fc_config *fcConfig)
         goto done;
     }
 
+#ifdef _WIN32
+    if ((fcConfig->certsDirectory[strlen(fcConfig->certsDirectory) - 1] != '/') &&
+        ((fcConfig->certsDirectory[strlen(fcConfig->certsDirectory) - 1] != '\\'))) {
+#else
+    if (fcConfig->certsDirectory[strlen(fcConfig->certsDirectory) - 1] != '/') {
+#endif
+        g_certsDirectory = malloc(strlen(fcConfig->certsDirectory) + strlen(PATHSEP) + 1);
+        snprintf(
+            g_certsDirectory,
+            strlen(fcConfig->certsDirectory) + strlen(PATHSEP) + 1,
+            "%s" PATHSEP,
+            fcConfig->certsDirectory);
+    } else {
+        g_certsDirectory = cli_safer_strdup(fcConfig->certsDirectory);
+    }
+
+    /* Validate that the database directory exists, and store it. */
+    if (LSTAT(g_certsDirectory, &statbuf) == -1) {
+        logg(LOGG_ERROR, "ClamAV CA certificates directory does not exist: %s\n", g_certsDirectory);
+        status = FC_EDIRECTORY;
+        goto done;
+    }
+    if (!S_ISDIR(statbuf.st_mode)) {
+        logg(LOGG_ERROR, "ClamAV CA certificates directory is not a directory: %s\n", g_certsDirectory);
+        status = FC_EDIRECTORY;
+        goto done;
+    }
+
     g_tempDirectory = cli_safer_strdup(fcConfig->tempDirectory);
 
     g_maxAttempts    = fcConfig->maxAttempts;

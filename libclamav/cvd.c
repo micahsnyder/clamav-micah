@@ -210,7 +210,7 @@ static void cli_tgzload_cleanup(int comp, struct cli_dbio *dbio, int fdd)
     }
 }
 
-static int cli_tgzload(int fd, struct cl_engine *engine, unsigned int *signo, unsigned int options, struct cli_dbio *dbio, struct cli_dbinfo *dbinfo)
+static int cli_tgzload(cvd_t *cvd, struct cl_engine *engine, unsigned int *signo, unsigned int options, struct cli_dbio *dbio, struct cli_dbinfo *dbinfo)
 {
     char osize[13], name[101];
     char block[TAR_BLOCKSIZE];
@@ -219,8 +219,11 @@ static int cli_tgzload(int fd, struct cl_engine *engine, unsigned int *signo, un
     off_t off;
     struct cli_dbinfo *db;
     char hash[32];
+    int fd = -1;
 
     cli_dbgmsg("in cli_tgzload()\n");
+
+    fd = cvd_get_file(cvd);
 
     if (lseek(fd, 512, SEEK_SET) < 0) {
         return CL_ESEEK;
@@ -519,171 +522,159 @@ void cl_cvdfree(struct cl_cvd *cvd)
     free(cvd);
 }
 
-/**
- * @brief Verify the signature of a CVD file.
- *
- * @param fs            CVD File stream to read from.
- * @param [out] cvdpt   (optional) Pointer to a CVD header struct to fill in .
- * @param skipsig       If non-zero, skip the signature verification.
- * @return cl_error_t   CL_SUCCESS on success. CL_ECVD, CL_EMEM, or CL_EVERIFY on error.
- */
-static cl_error_t cli_cvdverify(FILE *fs, struct cl_cvd *cvdpt, unsigned int skipsig, const char *certs_directory)
-{
-    cl_error_t status  = CL_ECVD;
-    cl_error_t cvd_verify_ret;
-    FFIError *sign_check_error = NULL;
-
-    // Check if we should skip signature verification
-    if (skipsig) {
-        status = CL_SUCCESS;
-        goto done;
-    }
-
-    cvd_verify_ret = cli_check_cvd(filename, certs_directory, false, false, &sign_check_error);
-    if (cvd_verify_ret == CL_EVERIFY) {
-        cli_errmsg(
-            "CVD verification failed: %s\n",
-            filename, ffierror_fmt(sign_check_error));
-
-        status = CL_EVERIFY;
-        goto done;
-    }
-
-    status = CL_SUCCESS;
-
-done:
-    return CL_SUCCESS;
-}
-
 cl_error_t cl_cvdverify(const char *file)
 {
     struct cl_engine *engine;
-    FILE *fs;
     cl_error_t ret;
-    int dbtype = 0;
-
-    if ((fs = fopen(file, "rb")) == NULL) {
-        cli_errmsg("cl_cvdverify: Can't open file %s\n", file);
-        return CL_EOPEN;
-    }
+    cvd_type dbtype = CVD_TYPE_CVD;
 
     if (!(engine = cl_engine_new())) {
         cli_errmsg("cl_cvdverify: Can't create new engine\n");
-        fclose(fs);
-        return CL_EMEM;
+        ret = CL_EMEM;
+        goto done;
     }
     engine->cb_stats_submit = NULL; /* Don't submit stats if we're just verifying a CVD */
 
-    if (!!cli_strbcasestr(file, ".cld"))
-        dbtype = 1;
-    else if (!!cli_strbcasestr(file, ".cud"))
-        dbtype = 2;
+    if (!!cli_strbcasestr(file, ".cld")) {
+        dbtype = CVD_TYPE_CLD;
+    } else if (!!cli_strbcasestr(file, ".cud")) {
+        dbtype = CVD_TYPE_CUD;
+    }
 
-    ret = cli_cvdload(fs, engine, NULL, CL_DB_STDOPT | CL_DB_PUA, dbtype, file, 1);
+    ret = cli_cvdload(engine, NULL, CL_DB_STDOPT | CL_DB_PUA, dbtype, file, 1);
 
+done:
     cl_engine_free(engine);
-    fclose(fs);
+
     return ret;
 }
 
-cl_error_t cli_cvdload(FILE *fs, struct cl_engine *engine, unsigned int *signo, unsigned int options, unsigned int dbtype, const char *filename, unsigned int chkonly, const char *certs_directory)
+cl_error_t cli_cvdload(struct cl_engine *engine, unsigned int *signo, unsigned int options, cvd_type dbtype, const char *filename, unsigned int chkonly)
 {
-    struct cl_cvd cvd, dupcvd;
-    FILE *dupfs;
+    cl_error_t status = CL_ECVD;
     cl_error_t ret;
     time_t s_time;
-    int cfd;
     struct cli_dbio dbio;
     struct cli_dbinfo *dbinfo = NULL;
-    char *dupname;
+    char *dupname = NULL;
+    cvd_t *cvd    = NULL;
+    cvd_t *dupcvd = NULL;
+    FFIError *err = NULL;
 
     dbio.hashctx = NULL;
 
     cli_dbgmsg("in cli_cvdload()\n");
 
-    /* load the cvd header and (optionally) verify the digital signature */
-    if ((ret = cli_cvdverify(fs, &cvd, dbtype, certs_directory)))
-        return ret;
+    /* Open the cvd and read the header */
+    cvd = cvd_open(filename, &err);
+    if (!cvd) {
+        cli_errmsg("cli_cvdload: Can't open CVD file %s: %s\n", filename, ffierror_fmt(err));
+        goto done;
+    }
 
-    if (dbtype <= 1) {
+    /* For actual .cvd files, verify the digital signature. */
+    if (dbtype == CVD_TYPE_CVD) {
+        if (!cvd_verify(cvd, engine->certs_directory, false, &err)) {
+            cli_errmsg("cli_cvdload: Can't verify CVD file %s: %s\n", filename, ffierror_fmt(err));
+            status = CL_EVERIFY;
+            goto done;
+        }
+    }
+
+    /* For .cvd files, check if there is a .cld of the same name.
+       Reminder, .cld's are patched .cvd's so that would be a duplicate.
+       Because it shouldn't happen, we treat it as an error. */
+    if (dbtype == CVD_TYPE_CVD) {
         /* check for duplicate db */
         dupname = cli_safer_strdup(filename);
-        if (!dupname)
-            return CL_EMEM;
-        dupname[strlen(dupname) - 2] = (dbtype == 1 ? 'v' : 'l');
-        if (!access(dupname, R_OK) && (dupfs = fopen(dupname, "rb"))) {
-            if ((ret = cli_cvdverify(dupfs, &dupcvd, !dbtype, certs_directory))) {
-                fclose(dupfs);
-                free(dupname);
-                return ret;
-            }
-            fclose(dupfs);
-            if (dupcvd.version > cvd.version) {
+        if (!dupname) {
+            status = CL_EMEM;
+            goto done;
+        }
+
+        dupname[strlen(dupname) - 2] = (dbtype == CVD_TYPE_CLD ? 'v' : 'l');
+
+        dupcvd = cvd_open(dupname, &err);
+        if (dupcvd) {
+            if (cvd_get_version(dupcvd) > cvd_get_version(cvd)) {
                 cli_warnmsg("Detected duplicate databases %s and %s. The %s database is older and will not be loaded, you should manually remove it from the database directory.\n", filename, dupname, filename);
-                free(dupname);
-                return CL_SUCCESS;
-            } else if (dupcvd.version == cvd.version && !dbtype) {
+                status = CL_SUCCESS;
+                goto done;
+            } else if ((cvd_get_version(dupcvd) == cvd_get_version(cvd)) &&
+                       dbtype == CVD_TYPE_CVD) {
                 cli_warnmsg("Detected duplicate databases %s and %s, please manually remove one of them\n", filename, dupname);
-                free(dupname);
-                return CL_SUCCESS;
+                status = CL_SUCCESS;
+                goto done;
             }
         }
-        free(dupname);
     }
 
     if (strstr(filename, "daily.")) {
         time(&s_time);
-        if (cvd.stime > s_time) {
-            if (cvd.stime - (unsigned int)s_time > 3600) {
+        if (cvd_get_time_creation(cvd) > (uint64_t)s_time) {
+            if (cvd_get_time_creation(cvd) - (unsigned int)s_time > 3600) {
                 cli_warnmsg("******************************************************\n");
                 cli_warnmsg("***      Virus database timestamp in the future!   ***\n");
                 cli_warnmsg("***  Please check the timezone and clock settings  ***\n");
                 cli_warnmsg("******************************************************\n");
             }
-        } else if ((unsigned int)s_time - cvd.stime > 604800) {
+        } else if ((unsigned int)s_time - cvd_get_time_creation(cvd) > 604800) {
             cli_warnmsg("**************************************************\n");
             cli_warnmsg("***  The virus database is older than 7 days!  ***\n");
             cli_warnmsg("***   Please update it as soon as possible.    ***\n");
             cli_warnmsg("**************************************************\n");
         }
-        engine->dbversion[0] = cvd.version;
-        engine->dbversion[1] = cvd.stime;
+        engine->dbversion[0] = cvd_get_version(cvd);
+        engine->dbversion[1] = cvd_get_time_creation(cvd);
     }
 
-    if (cvd.fl > cl_retflevel()) {
+    if (cvd_get_min_flevel(cvd) > cl_retflevel()) {
         cli_warnmsg("*******************************************************************\n");
         cli_warnmsg("***  This version of the ClamAV engine is outdated.             ***\n");
         cli_warnmsg("***   Read https://docs.clamav.net/manual/Installing.html       ***\n");
         cli_warnmsg("*******************************************************************\n");
     }
 
-    cfd          = fileno(fs);
     dbio.chkonly = 0;
-    if (dbtype == 2)
-        ret = cli_tgzload(cfd, engine, signo, options | CL_DB_UNSIGNED, &dbio, NULL);
-    else
-        ret = cli_tgzload(cfd, engine, signo, options | CL_DB_OFFICIAL, &dbio, NULL);
-    if (ret != CL_SUCCESS)
-        return ret;
+    if (dbtype == CVD_TYPE_CUD) {
+        ret = cli_tgzload(cvd, engine, signo, options | CL_DB_UNSIGNED, &dbio, NULL);
+    } else {
+        ret = cli_tgzload(cvd, engine, signo, options | CL_DB_OFFICIAL, &dbio, NULL);
+    }
+    if (ret != CL_SUCCESS) {
+        status = ret;
+        goto done;
+    }
 
     dbinfo = engine->dbinfo;
-    if (!dbinfo || !dbinfo->cvd || (dbinfo->cvd->version != cvd.version) || (dbinfo->cvd->sigs != cvd.sigs) || (dbinfo->cvd->fl != cvd.fl) || (dbinfo->cvd->stime != cvd.stime)) {
+    if (!dbinfo ||
+        !dbinfo->cvd ||
+        ((uint32_t)dbinfo->cvd->version != cvd_get_version(cvd)) ||
+        ((uint32_t)dbinfo->cvd->sigs != cvd_get_num_sigs(cvd)) ||
+        ((uint32_t)dbinfo->cvd->fl != cvd_get_min_flevel(cvd)) ||
+        ((uint64_t)dbinfo->cvd->stime != cvd_get_time_creation(cvd))) {
+
         cli_errmsg("cli_cvdload: Corrupted CVD header\n");
-        return CL_EMALFDB;
+        status = CL_EMALFDB;
+        goto done;
     }
     dbinfo = engine->dbinfo ? engine->dbinfo->next : NULL;
     if (!dbinfo) {
         cli_errmsg("cli_cvdload: dbinfo error\n");
-        return CL_EMALFDB;
+        status = CL_EMALFDB;
+        goto done;
     }
 
     dbio.chkonly = chkonly;
-    if (dbtype == 2)
+    if (dbtype == CVD_TYPE_CUD) {
         options |= CL_DB_UNSIGNED;
-    else
+    } else {
         options |= CL_DB_SIGNED | CL_DB_OFFICIAL;
+    }
 
-    ret = cli_tgzload(cfd, engine, signo, options, &dbio, dbinfo);
+    status = cli_tgzload(cvd, engine, signo, options, &dbio, dbinfo);
+
+done:
 
     while (engine->dbinfo) {
         dbinfo         = engine->dbinfo;
@@ -695,86 +686,114 @@ cl_error_t cli_cvdload(FILE *fs, struct cl_engine *engine, unsigned int *signo, 
         MPOOL_FREE(engine->mempool, dbinfo);
     }
 
-    return ret;
-}
-
-static cl_error_t cli_cvdunpack(const char *file, const char *dir)
-{
-    int fd, ret;
-
-    fd = open(file, O_RDONLY | O_BINARY);
-    if (fd == -1)
-        return -1;
-
-    if (lseek(fd, 512, SEEK_SET) < 0) {
-        close(fd);
-        return -1;
+    free(dupname);
+    if (NULL != cvd) {
+        cvd_free(cvd);
     }
-
-    ret = cli_untgz(fd, dir);
-    close(fd);
-    return ret;
-}
-
-cl_error_t cl_cvdunpack(const char *file, const char *dir, bool dont_verify, const char *certs_directory)
-{
-    cl_error_t status = CL_SUCCESS;
-    FILE *fs          = NULL;
-
-    fs = fopen(file, "rb");
-    if (NULL == fs) {
-        char err[128];
-        cli_errmsg("Can't open CVD: %s -- %s\n", file, cli_strerror(errno, err, sizeof(err)));
-        return CL_EOPEN;
-    }
-
-    if (!dont_verify) {
-        status = cli_cvdverify(fs, NULL, 0, certs_directory);
-        if (CL_SUCCESS != status) {
-            cli_errmsg("CVD verification failed for: %s\n", file);
-            goto done;
-        }
-    }
-
-    status = cli_cvdunpack(file, dir);
-    if (CL_SUCCESS != status) {
-        cli_errmsg("CVD unpacking failed for: %s\n", file);
-        goto done;
-    }
-
-done:
-    if (NULL != fs) {
-        fclose(fs);
+    if (NULL != dupcvd) {
+        cvd_free(dupcvd);
     }
 
     return status;
 }
 
-static cl_error_t cvdgetfileage(const char *path, time_t *age_seconds, const char *certs_directory)
+cl_error_t cl_cvdunpack(const char *file, const char *dir, bool dont_verify)
 {
-    struct cl_cvd cvd;
-    time_t s_time;
     cl_error_t status = CL_SUCCESS;
-    FILE *fs          = NULL;
+    cvd_t *cvd        = NULL;
+    FFIError *err     = NULL;
 
-    if ((fs = fopen(path, "rb")) == NULL) {
-        cli_errmsg("cvdgetfileage: Can't open file %s\n", path);
+    cvd = cvd_open(file, &err);
+    if (!cvd) {
+        cli_errmsg("Can't open CVD file %s: %s\n", file, ffierror_fmt(err));
         return CL_EOPEN;
     }
 
-    if ((status = cli_cvdverify(fs, &cvd, 1, certs_directory)) != CL_SUCCESS)
+    if (!dont_verify) {
+        if (!cvd_verify(cvd, NULL, false, &err)) {
+            cli_errmsg("CVD verification failed: %s\n", ffierror_fmt(err));
+            status = CL_EVERIFY;
+            goto done;
+        }
+    }
+
+    if (!cvd_unpack(cvd, dir, &err)) {
+        cli_errmsg("CVD unpacking failed: %s\n", ffierror_fmt(err));
+        status = CL_EUNPACK;
         goto done;
+    }
+
+done:
+
+    if (NULL != cvd) {
+        cvd_free(cvd);
+    }
+
+    return status;
+}
+
+cl_error_t cl_cvdunpack_ex(const char *file, const char *dir, bool dont_verify, const char *certs_directory)
+{
+    cl_error_t status = CL_SUCCESS;
+    cvd_t *cvd        = NULL;
+    FFIError *err     = NULL;
+
+    cvd = cvd_open(file, &err);
+    if (!cvd) {
+        cli_errmsg("Can't open CVD file %s: %s\n", file, ffierror_fmt(err));
+        return CL_EOPEN;
+    }
+
+    if (!dont_verify) {
+        if (!cvd_verify(cvd, certs_directory, false, &err)) {
+            cli_errmsg("CVD verification failed: %s\n", ffierror_fmt(err));
+            status = CL_EVERIFY;
+            goto done;
+        }
+    }
+
+    if (!cvd_unpack(cvd, dir, &err)) {
+        cli_errmsg("CVD unpacking failed: %s\n", ffierror_fmt(err));
+        status = CL_EUNPACK;
+        goto done;
+    }
+
+done:
+
+    if (NULL != cvd) {
+        cvd_free(cvd);
+    }
+
+    return status;
+}
+
+static cl_error_t cvdgetfileage(const char *path, time_t *age_seconds)
+{
+    time_t s_time;
+    cl_error_t status = CL_EOPEN;
+    cvd_t *cvd        = NULL;
+    FFIError *err     = NULL;
+
+    cvd = cvd_open(path, &err);
+    if (!cvd) {
+        cli_errmsg("Can't open CVD file %s: %s\n", path, ffierror_fmt(err));
+        goto done;
+    }
 
     time(&s_time);
 
-    if (cvd.stime > s_time)
+    if (cvd_get_time_creation(cvd) > (uint64_t)s_time) {
         *age_seconds = 0;
-    else
-        *age_seconds = s_time - cvd.stime;
+    } else {
+        *age_seconds = (uint64_t)s_time - cvd_get_time_creation(cvd);
+    }
+
+    status = CL_SUCCESS;
 
 done:
-    if (fs)
-        fclose(fs);
+    if (NULL != cvd) {
+        cvd_free(cvd);
+    }
 
     return status;
 }

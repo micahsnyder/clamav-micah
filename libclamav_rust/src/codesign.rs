@@ -1,8 +1,6 @@
 use std::{
-    ffi::CStr,
     fs::File,
     io::{prelude::*, BufReader},
-    os::raw::c_char,
     path::{Path, PathBuf},
 };
 
@@ -21,53 +19,6 @@ use clam_sigutil::{
 
 use log::{debug, error, warn};
 
-use crate::{
-    ffi_error,
-    ffi_util::FFIError,
-    {rrf_call, validate_str_param},
-};
-
-// /// C interface for verifying a digitally signed file.
-// /// Handles all the unsafe ffi stuff.
-// ///
-// /// # Safety
-// ///
-// /// No parameters may be NULL
-// #[export_name = "cli_verify_file_signature"]
-// pub unsafe extern "C" fn cli_verify_file_signature(
-//     signed_file_path_str: *const c_char,
-//     certs_directory_str: *const c_char,
-//     err: *mut *mut FFIError,
-// ) -> bool {
-//     let signed_file_path_str = validate_str_param!(signed_file_path_str);
-//     let signed_file_path = match Path::new(signed_file_path_str).canonicalize() {
-//         Ok(p) => p,
-//         Err(e) => {
-//             return ffi_error!(
-//                 err = err,
-//                 Error::CannotVerify(format!("Invalid file path: {}", e))
-//             );
-//         }
-//     };
-
-//     let certs_directory_str = validate_str_param!(certs_directory_str);
-//     let certs_directory = match Path::new(certs_directory_str).canonicalize() {
-//         Ok(p) => p,
-//         Err(e) => {
-//             return ffi_error!(
-//                 err = err,
-//                 Error::CannotVerify(format!("Invalid certs directory path: {}", e))
-//             );
-//         }
-//     };
-
-//     rrf_call!(verify_signed_file(
-//         err = err,
-//         &signed_file_path,
-//         &certs_directory
-//     ))
-// }
-
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Can't verify: {0}")]
@@ -83,7 +34,7 @@ pub enum Error {
     SignError(#[from] openssl::error::ErrorStack),
 
     #[error("Error verifying signature: {0}")]
-    InvalidSignature(String),
+    InvalidDigitalSignature(String),
 
     #[error(
         "Incorrect public key, does not match any serial number in the signature's signers chain"
@@ -146,9 +97,9 @@ pub fn verify_signed_file(signed_file_path: &Path, signature_file_path: &Path, c
                                 Ok(()) => {
                                     return Ok(());
                                 }
-                                Err(Error::VerifyFailed) => {
-                                    warn!("Invalid digital signature for {:?}", signed_file_path);
-                                    return Err(Error::VerifyFailed);
+                                Err(Error::InvalidDigitalSignature(m)) => {
+                                    warn!("Invalid digital signature for {:?}: {}", signed_file_path, m);
+                                    return Err(Error::InvalidDigitalSignature(m));
                                 }
                                 Err(e) => {
                                     debug!("Error verifying signature with {:?}: {:?}", cert_path, e);
@@ -235,7 +186,7 @@ impl Verifier {
         // Get the certs from the pkcs7 pkcs7
         let signers = pkcs7
             .signers(&certs, flags)
-            .map_err(|_| Error::InvalidSignature("No signers found".to_string()))?;
+            .map_err(|_| Error::InvalidDigitalSignature("No signers found".to_string()))?;
 
         // Check each cert in the pkcs7 chain to see if it matches the root CA
         // If we can't find a matching serial number, then we can't verify the pkcs7 signature.
@@ -272,7 +223,7 @@ impl Verifier {
                     }
                     Err(e) => {
                         eprintln!("Error verifying signature: {}", e);
-                        return Err(Error::InvalidSignature(e.to_string()));
+                        return Err(Error::InvalidDigitalSignature(e.to_string()));
                     }
                 }
             }

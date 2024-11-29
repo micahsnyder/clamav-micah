@@ -76,6 +76,10 @@ CLAMAV_1.1.0 {
     cl_cvdgetage;
     cl_engine_set_clcb_vba;
 } CLAMAV_1.0.0;
+CLAMAV_1.5.0 {
+  global:
+    cl_cvdunpack_ex;
+} CLAMAV_1.1.0;
 CLAMAV_PRIVATE {
   global:
     cli_sigperf_print;
