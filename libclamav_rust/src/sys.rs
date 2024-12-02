@@ -1184,7 +1184,7 @@ extern "C" {
 }
 extern "C" {
     pub fn cli_versig(
-        sha256: *const ::std::os::raw::c_uchar,
+        md5: *const ::std::os::raw::c_char,
         dsig_str: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
 }

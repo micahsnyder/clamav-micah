@@ -321,9 +321,14 @@ impl CVD {
                 Error::Parse("Failed to convert RSA digital signature to CString".to_string())
             })?;
 
+            // convert the calculated MD5 hash to a null-terminated string
+            let calculated_md5_cstring = CString::new(calculated_md5).map_err(|_| {
+                Error::Parse("Failed to convert calculated MD5 hash to CString".to_string())
+            })?;
+
             // Verify cdiff
             let versig_result =
-                unsafe { sys::cli_versig(calculated_md5.as_ptr(), dsig_cstring.as_ptr()) };
+                unsafe { sys::cli_versig(calculated_md5_cstring.as_ptr(), dsig_cstring.as_ptr()) };
 
             debug!("verify_rsa_dsig: versig() result = {}", versig_result);
             if versig_result != 0 {
