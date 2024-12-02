@@ -13,7 +13,7 @@ use std::{
 
 use flate2::read::GzDecoder;
 use hex;
-use log::{debug, warn};
+use log::{debug, info, warn};
 
 use crate::{
     codesign, ffi_error, ffi_error_null, ffi_util::FFIError, sys, validate_optional_str_param,
@@ -49,7 +49,7 @@ pub struct CVD {
     pub num_sigs: u32,
     pub min_flevel: u32,
     pub rsa_dsig: Option<String>,
-    pub md5: Option<Vec<u8>>,
+    pub md5: Option<String>,
     pub builder: String,
     pub file: File,
     pub path: PathBuf,
@@ -62,7 +62,7 @@ impl CVD {
         num_sigs: u32,
         min_flevel: u32,
         rsa_dsig: Option<String>,
-        md5: Option<Vec<u8>>,
+        md5: Option<String>,
         builder: String,
         path: PathBuf,
     ) -> Self {
@@ -152,17 +152,11 @@ impl CVD {
         })?;
         let md5_str = std::str::from_utf8(md5_bytes)
             .map_err(|_| Error::Parse("MD5 hash string is not valid unicode".to_string()))?;
-        let md5: Option<Vec<u8>> = if md5_str.len() != 32 {
+        let md5: Option<String> = if md5_str.len() != 32 {
             debug!("MD5 hash string is not 32 characters long. It may be empty");
             None
         } else {
-            match hex::decode(md5_str) {
-                Ok(md5) => Some(md5),
-                Err(e) => {
-                    debug!("MD5 hash string is not valid hex: {}", e);
-                    None
-                }
-            }
+            Some(md5_str.to_string())
         };
 
         let rsa_dsig_bytes = fields.next().ok_or_else(|| {
@@ -235,41 +229,55 @@ impl CVD {
         debug!("Read {} bytes from CVD file", bytes_read);
 
         let mut archive = tar::Archive::new(GzDecoder::new(file_bytes.as_slice()));
-        archive
-            .entries()
-            .map_err(|e| {
-                Error::Parse(format!(
-                    "Failed to enumerate files in signature archive: {}",
-                    e.to_string()
-                ))
-            })?
-            .filter_map(|e| e.ok())
-            .map(|mut entry| -> Result<PathBuf, Error> {
-                let file_path = entry.path().map_err(|e| {
-                    Error::Parse(format!(
-                        "Failed to get path for file in signature archive: {}",
-                        e.to_string()
-                    ))
-                })?;
-                if file_path.ancestors().count() > 0 {
-                    return Err(Error::UnpackFailed(
-                        "Directories are not supported".to_string(),
-                    ));
-                }
-                let filename = file_path.file_name().ok_or_else(|| {
-                    Error::Parse("Failed to get filename from archive entry".to_string())
-                })?;
-                let destination_file_path = path.join(filename);
-                entry.unpack(&destination_file_path).map_err(|e| {
-                    Error::Parse(format!(
-                        "Failed to unpack file from signature archive: {}",
-                        e.to_string()
-                    ))
-                })?;
-                Ok(destination_file_path)
-            })
-            .filter_map(|e| e.ok())
-            .for_each(|x| println!("> {}", x.display()));
+
+        archive.unpack(path).map_err(|e| {
+            Error::Parse(format!("Failed to unpack CVD archive: {}", e.to_string()))
+        })?;
+
+        // archive
+        //     .entries()
+        //     .map_err(|e| {
+        //         Error::Parse(format!(
+        //             "Failed to enumerate files in signature archive: {}",
+        //             e.to_string()
+        //         ))
+        //     })?
+        //     .map(|entry| -> Result<PathBuf, Error> {
+        //         let mut entry = entry.map_err(|e| {
+        //             Error::Parse(format!(
+        //                 "Failed to get entry from signature archive: {}",
+        //                 e.to_string()
+        //             ))
+        //         })?;
+
+        //         let file_path = entry.path().map_err(|e| {
+        //             Error::Parse(format!(
+        //                 "Failed to get path for file in signature archive: {}",
+        //                 e.to_string()
+        //             ))
+        //         })?;
+        //         if file_path.ancestors().count() > 0 {
+        //             return Err(Error::UnpackFailed(
+        //                 "Directories are not supported".to_string(),
+        //             ));
+        //         }
+
+        //         debug!("Unpacking file: {:?}", file_path);
+
+        //         let filename = file_path.file_name().ok_or_else(|| {
+        //             Error::Parse("Failed to get filename from archive entry".to_string())
+        //         })?;
+        //         let destination_file_path = path.join(filename);
+        //         entry.unpack(&destination_file_path).map_err(|e| {
+        //             Error::Parse(format!(
+        //                 "Failed to unpack file from signature archive: {}",
+        //                 e.to_string()
+        //             ))
+        //         })?;
+        //         Ok(destination_file_path)
+        //     })
+        //     .filter_map(|e| e.ok())
+        //     .for_each(|x| println!("> {}", x.display()));
 
         Ok(())
     }
@@ -290,8 +298,9 @@ impl CVD {
 
         let digest = md5::compute(&file_bytes);
         let calculated_md5 = digest.as_slice();
+        let calculated_md5 = hex::encode(calculated_md5);
 
-        debug!("MD5 hash: {:?}", calculated_md5);
+        debug!("MD5 hash: {}", calculated_md5);
 
         if let Some(md5) = &self.md5 {
             if calculated_md5 != &md5[..] {
@@ -368,7 +377,7 @@ impl CVD {
                 return Err(Error::InvalidDigitalSignature(m));
             }
             Err(e) => {
-                warn!("Detached CVD signature verification failed: {}", e);
+                debug!("Detached CVD signature verification failed: {}", e);
                 return Err(Error::CannotVerify(e.to_string()));
             }
         }
@@ -389,9 +398,10 @@ impl CVD {
                 }
                 Err(Error::InvalidDigitalSignature(e)) => {
                     warn!("Detached CVD signature is invalid: {}", e);
+                    return Err(Error::InvalidDigitalSignature(e));
                 }
                 Err(e) => {
-                    warn!("Failed to verify CVD with detached signature file: {}", e);
+                    debug!("Failed to verify CVD with detached signature file: {}", e);
                 }
             }
         } else {
@@ -573,15 +583,12 @@ pub unsafe extern "C" fn cvd_verify(
                 );
             }
         },
-        None => {
-            warn!("No certs directory provided. Skipping signature verification.");
-            None
-        }
+        None => None,
     };
 
     match cvd.verify(certs_directory, disable_md5) {
         Ok(()) => {
-            println!("CVD verified successfully");
+            info!("CVD verified successfully");
             true
         }
         Err(e) => {

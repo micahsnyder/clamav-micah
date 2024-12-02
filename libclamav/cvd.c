@@ -524,6 +524,11 @@ void cl_cvdfree(struct cl_cvd *cvd)
 
 cl_error_t cl_cvdverify(const char *file)
 {
+    return cl_cvdverify_ex(file, NULL);
+}
+
+cl_error_t cl_cvdverify_ex(const char *file, const char *certs_directory)
+{
     struct cl_engine *engine;
     cl_error_t ret;
     cvd_type dbtype = CVD_TYPE_CVD;
@@ -534,6 +539,14 @@ cl_error_t cl_cvdverify(const char *file)
         goto done;
     }
     engine->cb_stats_submit = NULL; /* Don't submit stats if we're just verifying a CVD */
+
+    if (NULL != certs_directory) {
+        ret = cl_engine_set_str(engine, CL_ENGINE_CERTSDIR, certs_directory);
+        if (CL_SUCCESS != ret) {
+            cli_errmsg("cl_cvdverify: Failed to set engine certs directory\n");
+            goto done;
+        }
+    }
 
     if (!!cli_strbcasestr(file, ".cld")) {
         dbtype = CVD_TYPE_CLD;
@@ -556,10 +569,10 @@ cl_error_t cli_cvdload(struct cl_engine *engine, unsigned int *signo, unsigned i
     time_t s_time;
     struct cli_dbio dbio;
     struct cli_dbinfo *dbinfo = NULL;
-    char *dupname = NULL;
-    cvd_t *cvd    = NULL;
-    cvd_t *dupcvd = NULL;
-    FFIError *err = NULL;
+    char *dupname             = NULL;
+    cvd_t *cvd                = NULL;
+    cvd_t *dupcvd             = NULL;
+    FFIError *err             = NULL;
 
     dbio.hashctx = NULL;
 

@@ -79,6 +79,7 @@ CLAMAV_1.1.0 {
 CLAMAV_1.5.0 {
   global:
     cl_cvdunpack_ex;
+    cl_cvdverify_ex;
 } CLAMAV_1.1.0;
 CLAMAV_PRIVATE {
   global:

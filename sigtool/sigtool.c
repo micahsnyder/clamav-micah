@@ -1303,6 +1303,7 @@ static int unpack(const struct optstruct *opts)
 {
     char name[512], *dbdir;
     const char *localdbdir = NULL;
+    const char *certs_directory = NULL;
 
     if (optget(opts, "datadir")->active)
         localdbdir = optget(opts, "datadir")->strarg;
@@ -1325,7 +1326,10 @@ static int unpack(const struct optstruct *opts)
         name[sizeof(name) - 1] = '\0';
     }
 
-    if (cl_cvdverify(name) != CL_SUCCESS) {
+    if (optget(opts, "certsdir")->active)
+        certs_directory = optget(opts, "certsdir")->strarg;
+
+    if (cl_cvdverify_ex(name, certs_directory) != CL_SUCCESS) {
         mprintf(LOGG_ERROR, "unpack: %s is not a valid CVD\n", name);
         return -1;
     }

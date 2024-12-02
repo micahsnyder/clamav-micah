@@ -318,6 +318,7 @@ enum cl_engine_field {
     CL_ENGINE_PCRE_MAX_FILESIZE,   /* uint64_t */
     CL_ENGINE_DISABLE_PE_CERTS,    /* uint32_t */
     CL_ENGINE_PE_DUMPCERTS,        /* uint32_t */
+    CL_ENGINE_CERTSDIR,            /* (char *) */
 };
 
 enum bytecode_security {
@@ -1138,6 +1139,15 @@ extern struct cl_cvd *cl_cvdparse(const char *head);
  * @return cl_error_t   CL_SUCCESS if success, else a CL_E* error code.
  */
 extern cl_error_t cl_cvdverify(const char *file);
+
+/**
+ * @brief Verify a CVD file by loading and unloading it.
+ *
+ * @param file          Filepath of CVD file.
+ * @param file          Directory containing CA certificates required to verify the CVD digital signature.
+ * @return cl_error_t   CL_SUCCESS if success, else a CL_E* error code.
+ */
+extern cl_error_t cl_cvdverify_ex(const char *file, const char *certs_directory);
 
 /**
  * @brief Free a CVD header struct.
