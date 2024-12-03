@@ -1249,6 +1249,15 @@ int scanmanager(const struct optstruct *opts)
         }
     }
 
+    if ((opt = optget(opts, "certsdir"))->enabled) {
+        if ((ret = cl_engine_set_str(engine, CL_ENGINE_CERTSDIR, opt->strarg))) {
+            logg(LOGG_ERROR, "cli_engine_set_str(CL_ENGINE_CERTSDIR) failed: %s\n", cl_strerror(ret));
+
+            ret = 2;
+            goto done;
+        }
+    }
+
     if ((opt = optget(opts, "database"))->active) {
         while (opt) {
             if (optget(opts, "fail-if-cvd-older-than")->enabled) {

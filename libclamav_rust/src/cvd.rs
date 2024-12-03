@@ -13,7 +13,7 @@ use std::{
 
 use flate2::read::GzDecoder;
 use hex;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 
 use crate::{
     codesign, ffi_error, ffi_error_null, ffi_util::FFIError, sys, validate_optional_str_param,
@@ -230,54 +230,43 @@ impl CVD {
 
         let mut archive = tar::Archive::new(GzDecoder::new(file_bytes.as_slice()));
 
-        archive.unpack(path).map_err(|e| {
-            Error::Parse(format!("Failed to unpack CVD archive: {}", e.to_string()))
-        })?;
+        archive
+            .entries()
+            .map_err(|e| {
+                Error::Parse(format!(
+                    "Failed to enumerate files in signature archive: {}",
+                    e.to_string()
+                ))
+            })?
+            .filter_map(|e| e.ok())
+            .for_each(|mut entry| -> () {
+                let file_path = match entry.path() {
+                    Ok(file_path) => file_path,
+                    Err(e) => {
+                        error!("Failed to get path for file in signature archive: {}", e);
+                        return;
+                    }
+                };
 
-        // archive
-        //     .entries()
-        //     .map_err(|e| {
-        //         Error::Parse(format!(
-        //             "Failed to enumerate files in signature archive: {}",
-        //             e.to_string()
-        //         ))
-        //     })?
-        //     .map(|entry| -> Result<PathBuf, Error> {
-        //         let mut entry = entry.map_err(|e| {
-        //             Error::Parse(format!(
-        //                 "Failed to get entry from signature archive: {}",
-        //                 e.to_string()
-        //             ))
-        //         })?;
+                let filename = match file_path.file_name() {
+                    Some(filename) => filename,
+                    None => {
+                        error!(
+                            "Failed to get filename for file in signature archive: {:?}",
+                            file_path
+                        );
+                        return;
+                    }
+                };
 
-        //         let file_path = entry.path().map_err(|e| {
-        //             Error::Parse(format!(
-        //                 "Failed to get path for file in signature archive: {}",
-        //                 e.to_string()
-        //             ))
-        //         })?;
-        //         if file_path.ancestors().count() > 0 {
-        //             return Err(Error::UnpackFailed(
-        //                 "Directories are not supported".to_string(),
-        //             ));
-        //         }
+                let destination_file_path = path.join(filename);
 
-        //         debug!("Unpacking file: {:?}", file_path);
+                debug!("Unpacking {:?} to: {:?}", filename, destination_file_path);
 
-        //         let filename = file_path.file_name().ok_or_else(|| {
-        //             Error::Parse("Failed to get filename from archive entry".to_string())
-        //         })?;
-        //         let destination_file_path = path.join(filename);
-        //         entry.unpack(&destination_file_path).map_err(|e| {
-        //             Error::Parse(format!(
-        //                 "Failed to unpack file from signature archive: {}",
-        //                 e.to_string()
-        //             ))
-        //         })?;
-        //         Ok(destination_file_path)
-        //     })
-        //     .filter_map(|e| e.ok())
-        //     .for_each(|x| println!("> {}", x.display()));
+                if let Err(e) = entry.unpack(&destination_file_path) {
+                    error!("Unpack failed: {}", e);
+                }
+            });
 
         Ok(())
     }
