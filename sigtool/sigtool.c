@@ -855,6 +855,14 @@ void removeTempDir(const struct optstruct *opts, char *dir)
     }
 }
 
+static int sign(const struct optstruct *opts) {
+    int ret;
+    char *target = optget(opts, "sign")->strarg;
+    char *key = optget(opts, "key")->strarg;
+
+}
+
+
 static int build(const struct optstruct *opts)
 {
     int ret, bc = 0, hy = 0;
@@ -3774,6 +3782,8 @@ int main(int argc, char **argv)
         ret = utf16decode(opts);
     else if (optget(opts, "build")->enabled)
         ret = build(opts);
+    else if (optget(opts, "sign")->enabled)
+        ret = sign(opts);
     else if (optget(opts, "unpack")->enabled)
         ret = unpack(opts);
     else if (optget(opts, "unpack-current")->enabled)

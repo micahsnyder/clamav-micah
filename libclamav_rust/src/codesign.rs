@@ -13,8 +13,7 @@ use openssl::{
 };
 
 use clam_sigutil::{
-    signature::{digital_sig::DigitalSig, parse_from_cvd_with_meta},
-    SigType, Signature,
+    sigbytes::{AppendSigBytes, SigBytes}, signature::{digital_sig::DigitalSig, parse_from_cvd_with_meta}, SigType, Signature
 };
 
 use log::{debug, error, warn};
@@ -33,6 +32,9 @@ pub enum Error {
     #[error("Error signing data: {0}")]
     SignError(#[from] openssl::error::ErrorStack),
 
+    #[error("Error converting digital signature to .sign file line: {0}")]
+    SigBytesError(#[from] clam_sigutil::signature::ToSigBytesError),
+
     #[error("Error verifying signature: {0}")]
     InvalidDigitalSignature(String),
 
@@ -43,7 +45,11 @@ pub enum Error {
 }
 
 /// Verifies a signed file.
-pub fn verify_signed_file(signed_file_path: &Path, signature_file_path: &Path, certs_directory: &Path) -> Result<(), Error> {
+pub fn verify_signed_file(
+    signed_file_path: &Path,
+    signature_file_path: &Path,
+    certs_directory: &Path,
+) -> Result<(), Error> {
     let signature_file: File = File::open(&signature_file_path)?;
 
     let mut signed_file: File = File::open(&signed_file_path)?;
@@ -57,6 +63,26 @@ pub fn verify_signed_file(signed_file_path: &Path, signature_file_path: &Path, c
     let reader = BufReader::new(signature_file);
 
     for (index, line) in reader.lines().enumerate() {
+        // First line should be "#clamsign-MAJOR.MINOR"
+        if index == 0 {
+            let line = line?;
+            if !line.starts_with("#clamsign") {
+                return Err(Error::CannotVerify(
+                    "Unsupported signature file format, expected first line start with '#clamsign-1.0'".to_string(),
+                ));
+            }
+
+            // Check clamsign version
+            let version = line.split('-').nth(1).unwrap();
+            if version != "1.0" {
+                return Err(Error::CannotVerify(
+                    "Unsupported signature file version, expected '1.0'".to_string(),
+                ));
+            }
+
+            continue;
+        }
+
         // Skip empty lines
         let line = line?;
         let line = line.trim();
@@ -77,7 +103,10 @@ pub fn verify_signed_file(signed_file_path: &Path, signature_file_path: &Path, c
                 let sig = sig.downcast::<DigitalSig>().unwrap();
 
                 sig.validate(&_meta).map_err(|e| {
-                    Error::CannotVerify(format!("{:?}:{}: Invalid signature: {}", signature_file_path, index, e))
+                    Error::CannotVerify(format!(
+                        "{:?}:{}: Invalid signature: {}",
+                        signature_file_path, index, e
+                    ))
                 })?;
 
                 match *sig {
@@ -86,23 +115,24 @@ pub fn verify_signed_file(signed_file_path: &Path, signature_file_path: &Path, c
                         for cert in certs_directory.read_dir()? {
                             let cert = cert?;
                             let cert_path = cert.path();
-                            let cert = File::open(&cert_path)?;
 
-                            let mut cert = BufReader::new(cert);
-                            let mut cert_data = vec![];
-                            cert.read_to_end(&mut cert_data)?;
-
-                            let verifier = Verifier::new(&cert_data);
+                            let verifier = Verifier::new(&cert_path)?;
                             match verifier.verify(&file_data, &pkcs7) {
                                 Ok(()) => {
                                     return Ok(());
                                 }
                                 Err(Error::InvalidDigitalSignature(m)) => {
-                                    warn!("Invalid digital signature for {:?}: {}", signed_file_path, m);
+                                    warn!(
+                                        "Invalid digital signature for {:?}: {}",
+                                        signed_file_path, m
+                                    );
                                     return Err(Error::InvalidDigitalSignature(m));
                                 }
                                 Err(e) => {
-                                    debug!("Error verifying signature with {:?}: {:?}", cert_path, e);
+                                    debug!(
+                                        "Error verifying signature with {:?}: {:?}",
+                                        cert_path, e
+                                    );
 
                                     // Try the next certificate
                                 }
@@ -112,7 +142,10 @@ pub fn verify_signed_file(signed_file_path: &Path, signature_file_path: &Path, c
                 }
             }
             Err(e) => {
-                eprintln!("{:?}:{}: Error parsing signature: {}", signature_file_path, index, e);
+                eprintln!(
+                    "{:?}:{}: Error parsing signature: {}",
+                    signature_file_path, index, e
+                );
                 return Err(Error::CannotVerify(e.to_string()));
             }
         };
@@ -130,40 +163,37 @@ pub struct Signer {
 }
 
 impl Signer {
-    pub fn new(signing_cert: &[u8], intermediates: Vec<Vec<u8>>, signing_key: &[u8]) -> Self {
-        let cert = X509::from_pem(signing_cert).unwrap();
+    pub fn new(
+        key_path: &Path,
+        cert_path: &Path,
+        intermediate_cert_paths: Vec<&Path>,
+    ) -> Result<Self, Error> {
+        let mut certs: Stack<X509> = Stack::new()?;
 
+        let cert_bytes = std::fs::read(cert_path)?;
+        let cert = X509::from_pem(&cert_bytes)?;
         debug!("Signing certificate: {:?}", cert);
+        certs.push(cert.clone())?;
 
-        let key = PKey::private_key_from_pem(signing_key).unwrap();
-
+        let signing_key_bytes = std::fs::read(key_path)?;
+        let key = PKey::private_key_from_pem(&signing_key_bytes)?;
         debug!("Signing key: {:?}", key);
 
-        let mut certs: Stack<X509> = Stack::new().unwrap();
-        certs.push(cert.clone()).unwrap();
-
-        for intermediate in intermediates {
-            let intermediate_cert = X509::from_pem(&intermediate).unwrap();
-
+        for intermediate_cert_path in intermediate_cert_paths {
+            let intermediate_cert_bytes = std::fs::read(intermediate_cert_path)?;
+            let intermediate_cert = X509::from_pem(&intermediate_cert_bytes)?;
             debug!("Intermediate certificate: {:?}", &intermediate_cert);
-
-            certs.push(intermediate_cert).unwrap();
+            certs.push(intermediate_cert)?;
         }
 
-        Signer { cert, certs, key }
+        Ok(Signer { cert, certs, key })
     }
 
-    pub fn sign(&self, data: &[u8]) -> Result<Vec<u8>, Error> {
+    pub fn sign(&self, data: &[u8]) -> Result<Pkcs7, Error> {
         let flags = Pkcs7Flags::DETACHED | Pkcs7Flags::BINARY;
 
-        // sign data
-        let pkcs7_result = Pkcs7::sign(&self.cert, &self.key, &self.certs, data, flags);
-        let pkcs7 = match pkcs7_result {
-            Ok(pkcs7) => pkcs7,
-            Err(e) => return Err(Error::SignError(e)),
-        };
-
-        pkcs7.to_pem().map_err(|e| Error::SignError(e))
+        Pkcs7::sign(&self.cert, &self.key, &self.certs, data, flags)
+            .map_err(|e| Error::SignError(e))
     }
 }
 
@@ -172,14 +202,15 @@ pub struct Verifier {
 }
 
 impl Verifier {
-    pub fn new(root_ca: &[u8]) -> Self {
-        let root_ca: X509 = X509::from_pem(root_ca).unwrap();
+    pub fn new(root_ca_path: &Path) -> Result<Self, Error> {
+        let root_ca_bytes = std::fs::read(root_ca_path)?;
+        let root_ca: X509 = X509::from_pem(&root_ca_bytes)?;
 
-        Verifier { root_ca }
+        Ok(Verifier { root_ca })
     }
 
     pub fn verify(&self, data: &[u8], pkcs7: &Pkcs7) -> Result<(), Error> {
-        let certs = stack::Stack::new().unwrap();
+        let certs = stack::Stack::new()?;
 
         let flags = Pkcs7Flags::DETACHED | Pkcs7Flags::BINARY;
 
@@ -195,8 +226,8 @@ impl Verifier {
             let subject = cert.subject_name();
             let issuer = cert.issuer_name();
             let serial = cert.serial_number();
-            let serial_num = serial.to_bn().unwrap();
-            let serial_string = serial_num.to_dec_str().unwrap();
+            let serial_num = serial.to_bn()?;
+            let serial_string = serial_num.to_dec_str()?;
             debug!("Subject: {:?}", subject);
             debug!("Issuer: {:?}", issuer);
             debug!("Serial: {:?}", serial_string);
@@ -234,136 +265,67 @@ impl Verifier {
 }
 
 pub fn sign_file(
-    target_file_path: PathBuf,
-    signature_file_path: Option<PathBuf>,
-    signing_cert_path: PathBuf,
-    intermediate_cert_path: Vec<PathBuf>,
-    signing_key_path: PathBuf,
-) {
-    let cert = std::fs::read(signing_cert_path);
-    let cert = match cert {
-        Ok(cert) => cert,
-        Err(e) => {
-            error!("Unable to read signing certificate: {e}");
-            return;
-        }
+    target_file_path: &Path,
+    signature_file_path: &Path,
+    signing_cert_path: &Path,
+    intermediate_cert_paths: Vec<&Path>,
+    signing_key_path: &Path,
+) -> Result<(), Error> {
+    let signer = Signer::new(signing_key_path, signing_cert_path, intermediate_cert_paths)?;
+
+    let data = std::fs::read(target_file_path)?;
+    let pkcs7 = signer.sign(&data)?;
+    let signature = DigitalSig::Pkcs7(pkcs7);
+    let mut sig_bytes: SigBytes = SigBytes::new();
+    signature.append_sigbytes(&mut sig_bytes)?;
+
+    // If the signature file already exists, open it and append the signature to it.
+    let mut writer = if signature_file_path.exists() {
+        let mut writer = std::io::BufWriter::new(std::fs::OpenOptions::new().append(true).open(signature_file_path)?);
+        // Seek to the end of the file
+        writer.seek(std::io::SeekFrom::End(0))?;
+        // Write a newline before the signature
+        writer.write(b"\n")?;
+
+        writer
+    } else {
+        // Create the signature file if it doesn't exist.
+        let mut writer = std::io::BufWriter::new(std::fs::File::create(signature_file_path)?);
+        writer.write(b"#clamsign-1.0\n")?;
+
+        writer
     };
 
-    let mut intermediates = Vec::new();
-    for intermediate_cert_path in intermediate_cert_path {
-        let intermediate_cert = std::fs::read(intermediate_cert_path);
-        let intermediate_cert = match intermediate_cert {
-            Ok(intermediate_cert) => intermediate_cert,
-            Err(e) => {
-                error!("Unable to read intermediate certificate: {e}");
-                return;
-            }
-        };
-        intermediates.push(intermediate_cert);
-    }
+    writer.write(sig_bytes.as_bytes())?;
 
-    let pkey = std::fs::read(signing_key_path);
-    let pkey = match pkey {
-        Ok(pkey) => pkey,
-        Err(e) => {
-            error!("Unable to read signing private key: {e}");
-            return;
-        }
-    };
+    // Write a newline after the signature
+    writer.write(b"\n")?;
 
-    let data = std::fs::read(&target_file_path);
-    let data = match data {
-        Ok(data) => data,
-        Err(e) => {
-            error!("Unable to read target file: {e}");
-            return;
-        }
-    };
-
-    let signer = Signer::new(&cert, intermediates, &pkey);
-    let signature = signer.sign(&data).unwrap();
-
-    // Default signature file is the target file with the .p7s extension
-    let signature_file_path = signature_file_path.unwrap_or_else(|| {
-        let mut new = target_file_path.clone();
-        let new = new.as_mut_os_string();
-        new.push(".p7s");
-        PathBuf::from(new.as_os_str())
-    });
-    debug!("Writing signature to {:?}", signature_file_path);
-
-    let signature_file = std::fs::File::create(&signature_file_path);
-    let signature_file = match signature_file {
-        Ok(signature_file) => signature_file,
-        Err(e) => {
-            error!("Unable to create signature file: {e}");
-            return;
-        }
-    };
-
-    let mut writer = std::io::BufWriter::new(signature_file);
-    let write_result = writer.write(&signature);
-    match write_result {
-        Ok(_) => {}
-        Err(e) => {
-            error!("Unable to write signature to file: {e}");
-            return;
-        }
-    }
+    Ok(())
 }
 
 pub fn verify_file(
     target_file_path: PathBuf,
-    signature_file_path: Option<PathBuf>,
+    signature_file_path: PathBuf,
     root_ca_path: PathBuf,
-) {
-    let root_ca = std::fs::read(root_ca_path);
-    let root_ca = match root_ca {
-        Ok(root_ca) => root_ca,
-        Err(e) => {
-            error!("Unable to read root CA certificate: {e}");
-            return;
-        }
-    };
-
+) -> Result<(), Error> {
     // Default signature file is the target file with the .p7s extension
-    let signature_file_path = signature_file_path.unwrap_or_else(|| {
-        let mut new = target_file_path.clone();
-        let new = new.as_mut_os_string();
-        new.push(".p7s");
-        PathBuf::from(new.as_os_str())
-    });
-    debug!("Reading signature to {:?}", signature_file_path);
+    let signature_bytes = std::fs::read(signature_file_path)?;
+    let signature = Pkcs7::from_pem(&signature_bytes)?;
 
-    let signature = std::fs::read(signature_file_path);
-    let signature = match signature {
-        Ok(signature) => signature,
-        Err(e) => {
-            error!("Unable to read signature file: {e}");
-            return;
-        }
-    };
+    let data = std::fs::read(target_file_path)?;
 
-    let data = std::fs::read(target_file_path);
-    let data = match data {
-        Ok(data) => data,
-        Err(e) => {
-            error!("Unable to read target file: {e}");
-            return;
-        }
-    };
-
-    let signature = Pkcs7::from_pem(&signature).unwrap();
-
-    let verifier = Verifier::new(&root_ca);
+    let verifier = Verifier::new(&root_ca_path)?;
     let result = verifier.verify(&data, &signature);
 
     match result {
         Ok(()) => {
             debug!("Signature is valid");
+            Ok(())
         }
         Err(e) => {
             error!("Signature is invalid: {e}");
+            Err(e)
         }
     }
 }
