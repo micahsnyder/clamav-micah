@@ -13,7 +13,7 @@ use std::{
 
 use flate2::read::GzDecoder;
 use hex;
-use log::{debug, error, info, warn};
+use log::{debug, error, warn};
 
 use crate::{
     codesign, ffi_error, ffi_error_null, ffi_util::FFIError, sys, validate_optional_str_param,
@@ -22,8 +22,6 @@ use crate::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    // #[error("Error signing data: {0}")]
-    // SignError(#[from] openssl::error::ErrorStack),
     #[error("Error parsing CVD file: {0}")]
     Parse(String),
 
@@ -582,7 +580,7 @@ pub unsafe extern "C" fn cvd_verify(
 
     match cvd.verify(certs_directory, disable_md5) {
         Ok(()) => {
-            info!("CVD verified successfully");
+            debug!("CVD verified successfully");
             true
         }
         Err(e) => {

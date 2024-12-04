@@ -1,4 +1,5 @@
 use std::{
+    ffi::CStr,
     fs::File,
     io::{prelude::*, BufReader},
     path::{Path, PathBuf},
@@ -13,15 +14,22 @@ use openssl::{
 };
 
 use clam_sigutil::{
-    sigbytes::{AppendSigBytes, SigBytes}, signature::{digital_sig::DigitalSig, parse_from_cvd_with_meta}, SigType, Signature
+    sigbytes::{AppendSigBytes, SigBytes},
+    signature::{digital_sig::DigitalSig, parse_from_cvd_with_meta},
+    SigType, Signature,
 };
 
 use log::{debug, error, warn};
+
+use crate::{ffi_error, ffi_util::FFIError, validate_str_param};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Can't verify: {0}")]
     CannotVerify(String),
+
+    #[error("Can't sign: {0}")]
+    SignFailed(String),
 
     #[error("Signature verification failed")]
     VerifyFailed,
@@ -29,8 +37,8 @@ pub enum Error {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
-    #[error("Error signing data: {0}")]
-    SignError(#[from] openssl::error::ErrorStack),
+    #[error("OpenSSL error: {0}")]
+    OpenSSLError(#[from] openssl::error::ErrorStack),
 
     #[error("Error converting digital signature to .sign file line: {0}")]
     SigBytesError(#[from] clam_sigutil::signature::ToSigBytesError),
@@ -44,7 +52,231 @@ pub enum Error {
     IncorrectPublicKey,
 }
 
+/// C interface for verify_signed_file() which verifies a file's external digital signature.
+/// Handles all the unsafe ffi stuff.
+///
+/// # Safety
+///
+/// No parameters may be NULL.
+#[export_name = "codesign_sign_file"]
+pub unsafe extern "C" fn codesign_sign_file(
+    target_file_path_str: *const std::os::raw::c_char,
+    signature_file_path_str: *const std::os::raw::c_char,
+    signing_key_path_str: *const std::os::raw::c_char,
+    signing_cert_path_str: *const std::os::raw::c_char,
+    intermediate_cert_paths_str: *const *const std::os::raw::c_char,
+    intermediate_cert_paths_len: usize,
+    err: *mut *mut FFIError,
+) -> bool {
+    let target_file_path_str = validate_str_param!(target_file_path_str);
+    let target_file_path = match Path::new(target_file_path_str).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return ffi_error!(
+                err = err,
+                Error::SignFailed(format!(
+                    "Invalid target file path '{}': {}",
+                    target_file_path_str, e
+                ))
+            );
+        }
+    };
+
+    let signature_file_path_str = validate_str_param!(signature_file_path_str);
+    let signature_file_path = Path::new(signature_file_path_str);
+
+    let signing_cert_path_str = validate_str_param!(signing_cert_path_str);
+    let signing_cert_path = match Path::new(signing_cert_path_str).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return ffi_error!(
+                err = err,
+                Error::SignFailed(format!(
+                    "Invalid signing certificate path '{}': {}",
+                    signing_cert_path_str, e
+                ))
+            );
+        }
+    };
+
+    let intermediate_cert_path_strs: &[*const i8] =
+        std::slice::from_raw_parts(intermediate_cert_paths_str, intermediate_cert_paths_len);
+    // now convert the intermediate_cert_path_strs to a Vec<&Path>
+    let intermediate_cert_paths: Vec<PathBuf> = intermediate_cert_path_strs
+        .into_iter()
+        .filter_map(|&path_str| -> Option<PathBuf> {
+            let path_str = if path_str.is_null() {
+                warn!("Intermiediate path string is NULL");
+                return None;
+            } else {
+                #[allow(unused_unsafe)]
+                match unsafe { CStr::from_ptr(path_str) }.to_str() {
+                    Err(e) => {
+                        warn!("Intermediate path string is not valid unicode: {}", e);
+                        return None;
+                    }
+                    Ok(s) => Some(s),
+                }
+            };
+
+            if let Some(path_str) = path_str {
+                match Path::new(path_str).canonicalize() {
+                    Ok(path) => Some(path),
+                    Err(e) => {
+                        warn!(
+                            "Invalid intermediate certificate path: '{}' {}",
+                            path_str, e
+                        );
+                        return None;
+                    }
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let signing_key_path_str = validate_str_param!(signing_key_path_str);
+    let signing_key_path = match Path::new(signing_key_path_str).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return ffi_error!(
+                err = err,
+                Error::SignFailed(format!("Invalid signing key path '{}': {}", signing_key_path_str, e))
+            );
+        }
+    };
+
+    match sign_file(
+        &target_file_path,
+        &signature_file_path,
+        &signing_cert_path,
+        &intermediate_cert_paths,
+        &signing_key_path,
+    ) {
+        Ok(()) => {
+            debug!("File signed successfully");
+            true
+        }
+        Err(e) => {
+            ffi_error!(err = err, e);
+            false
+        }
+    }
+}
+
+/// Signs a file.
+/// The signature is appended to the signature file.
+pub fn sign_file<P>(
+    target_file_path: &Path,
+    signature_file_path: &Path,
+    signing_cert_path: &Path,
+    intermediate_cert_paths: &[P],
+    signing_key_path: &Path,
+) -> Result<(), Error>
+where
+    P: AsRef<Path>,
+{
+    let signer = Signer::new(signing_key_path, signing_cert_path, intermediate_cert_paths)?;
+
+    let data = std::fs::read(target_file_path)?;
+    let pkcs7 = signer.sign(&data)?;
+
+    // Now convert the pkcs7 to a DigitalSig struct which may be converted to a .sign file signature line.
+    let signature = DigitalSig::Pkcs7(pkcs7);
+    let mut sig_bytes: SigBytes = SigBytes::new();
+    signature.append_sigbytes(&mut sig_bytes)?;
+
+    // If the signature file already exists, open it and append the signature to it.
+    let mut writer = if signature_file_path.exists() {
+        let mut writer = std::io::BufWriter::new(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(signature_file_path)?,
+        );
+        // Seek to the end of the file
+        writer.seek(std::io::SeekFrom::End(0))?;
+        // Write a newline before the signature
+        writer.write(b"\n")?;
+
+        writer
+    } else {
+        // Create the signature file if it doesn't exist.
+        let mut writer = std::io::BufWriter::new(std::fs::File::create(signature_file_path)?);
+        writer.write(b"#clamsign-1.0\n")?;
+
+        writer
+    };
+
+    writer.write(sig_bytes.as_bytes())?;
+
+    // Write a newline after the signature
+    writer.write(b"\n")?;
+
+    Ok(())
+}
+
+/// C interface for verify_signed_file() which verifies a file's external digital signature.
+/// Handles all the unsafe ffi stuff.
+///
+/// # Safety
+///
+/// No parameters may be NULL.
+#[export_name = "codesign_verify_file"]
+pub unsafe extern "C" fn codesign_verify_file(
+    signed_file_path_str: *const std::os::raw::c_char,
+    signature_file_path_str: *const std::os::raw::c_char,
+    certs_directory_str: *const std::os::raw::c_char,
+    err: *mut *mut FFIError,
+) -> bool {
+    let signed_file_path_str = validate_str_param!(signed_file_path_str);
+    let signed_file_path = match Path::new(signed_file_path_str).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return ffi_error!(
+                err = err,
+                Error::CannotVerify(format!("Invalid signed file path '{}': {}", signed_file_path_str, e))
+            );
+        }
+    };
+
+    let signature_file_path_str = validate_str_param!(signature_file_path_str);
+    let signature_file_path = match Path::new(signature_file_path_str).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return ffi_error!(
+                err = err,
+                Error::CannotVerify(format!("Invalid signature file path '{}': {}", signature_file_path_str, e))
+            );
+        }
+    };
+
+    let certs_directory_str = validate_str_param!(certs_directory_str);
+    let certs_directory = match Path::new(certs_directory_str).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return ffi_error!(
+                err = err,
+                Error::CannotVerify(format!("Invalid certs directory '{}': {}", certs_directory_str, e))
+            );
+        }
+    };
+
+    match verify_signed_file(&signed_file_path, &signature_file_path, &certs_directory) {
+        Ok(()) => {
+            debug!("CVD verified successfully");
+            true
+        }
+        Err(e) => {
+            ffi_error!(err = err, e);
+            false
+        }
+    }
+}
+
 /// Verifies a signed file.
+/// The signature file is expected to be in the ClamAV '.sign' format.
+/// The certificates directory is expected to contain the public keys of the signers.
 pub fn verify_signed_file(
     signed_file_path: &Path,
     signature_file_path: &Path,
@@ -57,7 +289,7 @@ pub fn verify_signed_file(
     let mut file_data = Vec::<u8>::new();
     let read_result = signed_file.read_to_end(&mut file_data);
     if let Err(e) = read_result {
-        return Err(Error::CannotVerify(format!("Error reading file: {}", e)));
+        return Err(Error::CannotVerify(format!("Error reading file '{:?}': {}", signed_file_path, e)));
     }
 
     let reader = BufReader::new(signature_file);
@@ -163,11 +395,14 @@ pub struct Signer {
 }
 
 impl Signer {
-    pub fn new(
+    pub fn new<P>(
         key_path: &Path,
         cert_path: &Path,
-        intermediate_cert_paths: Vec<&Path>,
-    ) -> Result<Self, Error> {
+        intermediate_cert_paths: &[P],
+    ) -> Result<Self, Error>
+    where
+        P: AsRef<Path>,
+    {
         let mut certs: Stack<X509> = Stack::new()?;
 
         let cert_bytes = std::fs::read(cert_path)?;
@@ -193,7 +428,7 @@ impl Signer {
         let flags = Pkcs7Flags::DETACHED | Pkcs7Flags::BINARY;
 
         Pkcs7::sign(&self.cert, &self.key, &self.certs, data, flags)
-            .map_err(|e| Error::SignError(e))
+            .map_err(|e| Error::OpenSSLError(e))
     }
 }
 
@@ -261,71 +496,5 @@ impl Verifier {
         }
 
         Err(Error::IncorrectPublicKey)
-    }
-}
-
-pub fn sign_file(
-    target_file_path: &Path,
-    signature_file_path: &Path,
-    signing_cert_path: &Path,
-    intermediate_cert_paths: Vec<&Path>,
-    signing_key_path: &Path,
-) -> Result<(), Error> {
-    let signer = Signer::new(signing_key_path, signing_cert_path, intermediate_cert_paths)?;
-
-    let data = std::fs::read(target_file_path)?;
-    let pkcs7 = signer.sign(&data)?;
-    let signature = DigitalSig::Pkcs7(pkcs7);
-    let mut sig_bytes: SigBytes = SigBytes::new();
-    signature.append_sigbytes(&mut sig_bytes)?;
-
-    // If the signature file already exists, open it and append the signature to it.
-    let mut writer = if signature_file_path.exists() {
-        let mut writer = std::io::BufWriter::new(std::fs::OpenOptions::new().append(true).open(signature_file_path)?);
-        // Seek to the end of the file
-        writer.seek(std::io::SeekFrom::End(0))?;
-        // Write a newline before the signature
-        writer.write(b"\n")?;
-
-        writer
-    } else {
-        // Create the signature file if it doesn't exist.
-        let mut writer = std::io::BufWriter::new(std::fs::File::create(signature_file_path)?);
-        writer.write(b"#clamsign-1.0\n")?;
-
-        writer
-    };
-
-    writer.write(sig_bytes.as_bytes())?;
-
-    // Write a newline after the signature
-    writer.write(b"\n")?;
-
-    Ok(())
-}
-
-pub fn verify_file(
-    target_file_path: PathBuf,
-    signature_file_path: PathBuf,
-    root_ca_path: PathBuf,
-) -> Result<(), Error> {
-    // Default signature file is the target file with the .p7s extension
-    let signature_bytes = std::fs::read(signature_file_path)?;
-    let signature = Pkcs7::from_pem(&signature_bytes)?;
-
-    let data = std::fs::read(target_file_path)?;
-
-    let verifier = Verifier::new(&root_ca_path)?;
-    let result = verifier.verify(&data, &signature);
-
-    match result {
-        Ok(()) => {
-            debug!("Signature is valid");
-            Ok(())
-        }
-        Err(e) => {
-            error!("Signature is invalid: {e}");
-            Err(e)
-        }
     }
 }

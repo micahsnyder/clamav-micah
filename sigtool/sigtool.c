@@ -855,13 +855,147 @@ void removeTempDir(const struct optstruct *opts, char *dir)
     }
 }
 
-static int sign(const struct optstruct *opts) {
-    int ret;
-    char *target = optget(opts, "sign")->strarg;
-    char *key = optget(opts, "key")->strarg;
+static int sign(const struct optstruct *opts)
+{
+    const struct optstruct *opt;
 
+    char *target         = NULL;
+    char *sign_file_name = NULL;
+
+    char *signing_key  = NULL;
+    char *signing_cert = NULL;
+
+    char **intermediate_certs       = NULL;
+    size_t intermediate_certs_count = 0;
+
+    bool sign_result     = false;
+    FFIError *sign_error = NULL;
+
+    target = optget(opts, "sign")->strarg;
+    if (NULL == target) {
+        mprintf(LOGG_ERROR, "sign: No target file specified.\n");
+        mprintf(LOGG_ERROR, "To sign a file with sigtool, you must specify a target file and use the --key and --cert options.\n");
+        mprintf(LOGG_ERROR, "For example:  sigtool --sign myfile.cvd --key /path/to/private.key --cert /path/to/public.pem --cert /path/to/intermediate.pem --cert /path/to/root-ca.pem\n");
+        return -1;
+    }
+
+    // sign file name will be the target filename with an added '.sign' extension
+    sign_file_name = malloc(strlen(target) + strlen(".sign") + 1);
+    if (NULL == sign_file_name) {
+        mprintf(LOGG_ERROR, "sign: Memory allocation error.\n");
+        return -1;
+    }
+    strcpy(sign_file_name, target);
+    strcat(sign_file_name, ".sign");
+
+    signing_key = optget(opts, "key")->strarg;
+    if (NULL == target) {
+        mprintf(LOGG_ERROR, "sign: No private key specified.\n");
+        mprintf(LOGG_ERROR, "To sign a file with sigtool, you must specify a target file and use the --key and --cert options.\n");
+        mprintf(LOGG_ERROR, "For example:  sigtool --sign myfile.cvd --key /path/to/private.key --cert /path/to/public.pem --cert /path/to/intermediate.pem --cert /path/to/root-ca.pem\n");
+        return -1;
+    }
+
+    opt = optget(opts, "cert");
+    if (NULL == opt) {
+        mprintf(LOGG_ERROR, "sign: No signing or intermediate certificates specified.\n");
+        mprintf(LOGG_ERROR, "To sign a file with sigtool, you must specify a target file and use the --key and --cert options.\n");
+        mprintf(LOGG_ERROR, "For example:  sigtool --sign myfile.cvd --key /path/to/private.key --cert /path/to/public.pem --cert /path/to/intermediate.pem --cert /path/to/root-ca.pem\n");
+        return -1;
+    }
+
+    while (opt) {
+        if (!opt->strarg) {
+            mprintf(LOGG_ERROR, "sign: The --cert option requires a path value to a signing or intermediate certificate.\n");
+            mprintf(LOGG_ERROR, "To sign a file with sigtool, you must specify a target file and use the --key and --cert options.\n");
+            mprintf(LOGG_ERROR, "For example:  sigtool --sign myfile.cvd --key /path/to/private.key --cert /path/to/public.pem --cert /path/to/intermediate.pem --cert /path/to/root-ca.pem\n");
+            return -1;
+        }
+
+        // The first --cert option is the signing certificate
+        if (NULL == signing_cert) {
+            signing_cert = opt->strarg;
+            continue;
+        }
+
+        // All other --cert options are intermediate certificates
+        intermediate_certs_count += 1;
+
+        intermediate_certs = realloc(intermediate_certs, intermediate_certs_count * sizeof(char *));
+        if (NULL == intermediate_certs) {
+            mprintf(LOGG_ERROR, "sign: Memory allocation error.\n");
+            return -1;
+        }
+
+        intermediate_certs[intermediate_certs_count - 1] = opt->strarg;
+
+        opt = opt->nextarg;
+    }
+
+    sign_result = codesign_sign_file(
+        target,
+        sign_file_name,
+        signing_key,
+        signing_cert,
+        (const char **)intermediate_certs,
+        intermediate_certs_count,
+        &sign_error);
+
+    if (!sign_result) {
+        mprintf(LOGG_ERROR, "sign: Failed to sign file '%s': %s\n", target, ffierror_fmt(sign_error));
+        return -1;
+    } else {
+        mprintf(LOGG_INFO, "sign: Successfully signed file '%s', and placed the signature in '%s'\n", target, sign_file_name);
+        return 0;
+    }
 }
 
+static int verify(const struct optstruct *opts)
+{
+    char *target         = NULL;
+    char *sign_file_name = NULL;
+
+    char *certsdir = NULL;
+
+    bool verify_result     = false;
+    FFIError *verify_error = NULL;
+
+    target = optget(opts, "verify")->strarg;
+    if (NULL == target) {
+        mprintf(LOGG_ERROR, "verify: No target file specified.\n");
+        mprintf(LOGG_ERROR, "To verify a file signed with sigtool, you must specify a target file. You may also override the default certificates directory using --certsdir.\n");
+        mprintf(LOGG_ERROR, "For example:  sigtool --verify myfile.cvd --certsdir /path/to/certs/\n");
+        return -1;
+    }
+
+    // sign file name will be the target filename with an added '.sign' extension
+    sign_file_name = malloc(strlen(target) + strlen(".sign") + 1);
+    if (NULL == sign_file_name) {
+        mprintf(LOGG_ERROR, "sign: Memory allocation error.\n");
+        return -1;
+    }
+    strcpy(sign_file_name, target);
+    strcat(sign_file_name, ".sign");
+
+    certsdir = optget(opts, "certsdir")->strarg;
+    if (NULL == certsdir) {
+        certsdir = CERTSDIR;
+    }
+
+    verify_result = codesign_verify_file(
+        target,
+        sign_file_name,
+        certsdir,
+        &verify_error);
+
+    if (!verify_result) {
+        mprintf(LOGG_ERROR, "verify: Failed to verify file '%s': %s\n", target, ffierror_fmt(verify_error));
+        return -1;
+    } else {
+        mprintf(LOGG_INFO, "verify: Successfully verified file '%s' with signature '%s'\n", target, sign_file_name);
+        return 0;
+    }
+}
 
 static int build(const struct optstruct *opts)
 {
@@ -1310,7 +1444,7 @@ static int build(const struct optstruct *opts)
 static int unpack(const struct optstruct *opts)
 {
     char name[512], *dbdir;
-    const char *localdbdir = NULL;
+    const char *localdbdir      = NULL;
     const char *certs_directory = NULL;
 
     if (optget(opts, "datadir")->active)
@@ -1336,6 +1470,8 @@ static int unpack(const struct optstruct *opts)
 
     if (optget(opts, "certsdir")->active)
         certs_directory = optget(opts, "certsdir")->strarg;
+    else
+        certs_directory = CERTSDIR;
 
     if (cl_cvdverify_ex(name, certs_directory) != CL_SUCCESS) {
         mprintf(LOGG_ERROR, "unpack: %s is not a valid CVD\n", name);
@@ -3784,6 +3920,8 @@ int main(int argc, char **argv)
         ret = build(opts);
     else if (optget(opts, "sign")->enabled)
         ret = sign(opts);
+    else if (optget(opts, "verify")->enabled)
+        ret = verify(opts);
     else if (optget(opts, "unpack")->enabled)
         ret = unpack(opts);
     else if (optget(opts, "unpack-current")->enabled)

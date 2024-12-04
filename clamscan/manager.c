@@ -1256,6 +1256,13 @@ int scanmanager(const struct optstruct *opts)
             ret = 2;
             goto done;
         }
+    } else {
+        if ((ret = cl_engine_set_str(engine, CL_ENGINE_CERTSDIR, CERTSDIR))) {
+            logg(LOGG_ERROR, "cli_engine_set_str(CL_ENGINE_CERTSDIR) failed: %s\n", cl_strerror(ret));
+
+            ret = 2;
+            goto done;
+        }
     }
 
     if ((opt = optget(opts, "database"))->active) {

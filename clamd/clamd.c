@@ -577,6 +577,20 @@ int main(int argc, char **argv)
             }
         }
 
+        if ((opt = optget(opts, "certsdir"))->enabled) {
+            if ((ret = cl_engine_set_str(engine, CL_ENGINE_CERTSDIR, opt->strarg))) {
+                logg(LOGG_ERROR, "cli_engine_set_str(CL_ENGINE_CERTSDIR) failed: %s\n", cl_strerror(ret));
+                ret = 1;
+                break;
+            }
+        } else {
+            if ((ret = cl_engine_set_str(engine, CL_ENGINE_CERTSDIR, CERTSDIR))) {
+                logg(LOGG_ERROR, "cli_engine_set_str(CL_ENGINE_CERTSDIR) failed: %s\n", cl_strerror(ret));
+                ret = 1;
+                break;
+            }
+        }
+
         cl_engine_set_clcb_hash(engine, hash_callback);
 
         cl_engine_set_clcb_virus_found(engine, clamd_virus_found_cb);

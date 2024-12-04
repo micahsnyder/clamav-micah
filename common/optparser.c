@@ -166,8 +166,10 @@ const struct clam_option __clam_options[] = {
     {NULL, "ascii-normalise", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_SIGTOOL, "", ""},
     {NULL, "utf16-decode", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_SIGTOOL, "", ""},
     {NULL, "build", 'b', CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_SIGTOOL, "", ""},
-    {NULL, "sign", 'b', CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_SIGTOOL, "", ""},
-    {NULL, "key", 'b', CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_SIGTOOL, "", ""},
+    {NULL, "sign", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_SIGTOOL, "", ""},
+    {NULL, "verify", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_SIGTOOL, "", ""},
+    {NULL, "key", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_SIGTOOL, "", ""},
+    {NULL, "cert", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, FLAG_MULTIPLE, OPT_SIGTOOL, "", ""},
     {NULL, "max-bad-sigs", 0, CLOPT_TYPE_NUMBER, MATCH_NUMBER, 3000, NULL, 0, OPT_SIGTOOL, "Maximum number of mismatched signatures when building a CVD. Zero disables this limit.", "3000"},
     {NULL, "flevel", 0, CLOPT_TYPE_NUMBER, MATCH_NUMBER, CL_FLEVEL, NULL, 0, OPT_SIGTOOL, "Feature level to put in the CVD", ""},
     {NULL, "cvd-version", 0, CLOPT_TYPE_NUMBER, MATCH_NUMBER, 0, NULL, 0, OPT_SIGTOOL, "Version number of the CVD to build", ""},
@@ -284,7 +286,7 @@ const struct clam_option __clam_options[] = {
 
     {"DatabaseDirectory", "datadir", 0, CLOPT_TYPE_STRING, NULL, -1, CONST_DATADIR, 0, OPT_CLAMD | OPT_FRESHCLAM | OPT_SIGTOOL, "This option allows you to change the default database directory.\nIf you enable it, please make sure it points to the same directory in\nboth clamd and freshclam.", "/var/lib/clamav"},
 
-    {"CVDCertsDirectory", "certsdir", 0, CLOPT_TYPE_STRING, NULL, -1, CONST_CERTSDIR, 0, OPT_CLAMD | OPT_FRESHCLAM | OPT_SIGTOOL, "This option allows you to change the default ClamAV CA certificates directory used to verify database external digital signatures.\nIf you enable it, please make sure it points to the same directory in\nboth clamd and freshclam.", "/etc/clamav/certs"},
+    {"CVDCertsDirectory", "certsdir", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_CLAMD | OPT_FRESHCLAM | OPT_SIGTOOL, "This option allows you to change the default ClamAV CA certificates directory used to verify database external digital signatures.\nIf you enable it, please make sure it points to the same directory in\nboth clamd and freshclam.", "/etc/clamav/certs"},
 
     {"OfficialDatabaseOnly", "official-db-only", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "Only load the official signatures published by the ClamAV project.", "no"},
 
