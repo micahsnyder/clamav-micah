@@ -399,10 +399,10 @@ macro_rules! validate_str_param_null {
 /// The CString pointer must be valid
 /// The CString pointer must not be used after calling this function
 #[export_name =  "ffi_cstring_free"]
-pub unsafe extern "C" fn ffi_cstring_free(cstring: *const c_char) {
+pub unsafe extern "C" fn ffi_cstring_free(cstring: *mut c_char) {
     if cstring.is_null() {
         warn!("Attempted to free a NULL CString pointer. Please report this at:: https://github.com/Cisco-Talos/clamav/issues");
     } else {
-        let _ = unsafe { Box::from_raw(cstring as *mut CString) };
+        let _ = unsafe { CString::from_raw(cstring) };
     }
 }

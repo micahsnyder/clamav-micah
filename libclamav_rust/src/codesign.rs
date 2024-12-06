@@ -142,7 +142,10 @@ pub unsafe extern "C" fn codesign_sign_file(
         Err(e) => {
             return ffi_error!(
                 err = err,
-                Error::SignFailed(format!("Invalid signing key path '{}': {}", signing_key_path_str, e))
+                Error::SignFailed(format!(
+                    "Invalid signing key path '{}': {}",
+                    signing_key_path_str, e
+                ))
             );
         }
     };
@@ -159,8 +162,7 @@ pub unsafe extern "C" fn codesign_sign_file(
             true
         }
         Err(e) => {
-            ffi_error!(err = err, e);
-            false
+            return ffi_error!(err = err, e);
         }
     }
 }
@@ -235,7 +237,10 @@ pub unsafe extern "C" fn codesign_verify_file(
         Err(e) => {
             return ffi_error!(
                 err = err,
-                Error::CannotVerify(format!("Invalid signed file path '{}': {}", signed_file_path_str, e))
+                Error::CannotVerify(format!(
+                    "Invalid signed file path '{}': {}",
+                    signed_file_path_str, e
+                ))
             );
         }
     };
@@ -246,7 +251,10 @@ pub unsafe extern "C" fn codesign_verify_file(
         Err(e) => {
             return ffi_error!(
                 err = err,
-                Error::CannotVerify(format!("Invalid signature file path '{}': {}", signature_file_path_str, e))
+                Error::CannotVerify(format!(
+                    "Invalid signature file path '{}': {}",
+                    signature_file_path_str, e
+                ))
             );
         }
     };
@@ -257,7 +265,10 @@ pub unsafe extern "C" fn codesign_verify_file(
         Err(e) => {
             return ffi_error!(
                 err = err,
-                Error::CannotVerify(format!("Invalid certs directory '{}': {}", certs_directory_str, e))
+                Error::CannotVerify(format!(
+                    "Invalid certs directory '{}': {}",
+                    certs_directory_str, e
+                ))
             );
         }
     };
@@ -268,8 +279,7 @@ pub unsafe extern "C" fn codesign_verify_file(
             true
         }
         Err(e) => {
-            ffi_error!(err = err, e);
-            false
+            return ffi_error!(err = err, e);
         }
     }
 }
@@ -289,7 +299,10 @@ pub fn verify_signed_file(
     let mut file_data = Vec::<u8>::new();
     let read_result = signed_file.read_to_end(&mut file_data);
     if let Err(e) = read_result {
-        return Err(Error::CannotVerify(format!("Error reading file '{:?}': {}", signed_file_path, e)));
+        return Err(Error::CannotVerify(format!(
+            "Error reading file '{:?}': {}",
+            signed_file_path, e
+        )));
     }
 
     let reader = BufReader::new(signature_file);
@@ -347,6 +360,8 @@ pub fn verify_signed_file(
                         for cert in certs_directory.read_dir()? {
                             let cert = cert?;
                             let cert_path = cert.path();
+
+                            debug!("Verifying with certificate: {:?}", cert_path);
 
                             let verifier = Verifier::new(&cert_path)?;
                             match verifier.verify(&file_data, &pkcs7) {
@@ -441,60 +456,62 @@ impl Verifier {
         let root_ca_bytes = std::fs::read(root_ca_path)?;
         let root_ca: X509 = X509::from_pem(&root_ca_bytes)?;
 
+        debug!("Root CA: {:?}", root_ca);
+
         Ok(Verifier { root_ca })
     }
 
     pub fn verify(&self, data: &[u8], pkcs7: &Pkcs7) -> Result<(), Error> {
-        let certs = stack::Stack::new()?;
+        if let Some(signed) = pkcs7.signed() {
+            if let Some(cert_stack) = signed.certificates() {
+                let root_ca_serial = self.root_ca.serial_number().to_bn()?;
+                debug!("Checking if the root CA's serial matches any in the signature's certificate stack...");
 
-        let flags = Pkcs7Flags::DETACHED | Pkcs7Flags::BINARY;
+                // Check each cert in the pkcs7 cert stack to see if it matches the root CA.
+                // If we can't find a matching serial number, then we can't verify the pkcs7 signature.
+                // That doesn't mean the signature is invalid, only that we don't have the required public key to verify it.
+                for cert in cert_stack {
+                    let serial = cert.serial_number().to_bn()?;
 
-        // Get the certs from the pkcs7 pkcs7
-        let signers = pkcs7
-            .signers(&certs, flags)
-            .map_err(|_| Error::InvalidDigitalSignature("No signers found".to_string()))?;
+                    if root_ca_serial == serial {
+                        // found a matching serial number in the pkcs7 cert stack matching the provided root CA.
+                        // We can verify the signature.
+                        debug!("Certificate serial is a match: {:?}. We should be able to use this root CA to verify this signature.", serial.to_dec_str()?);
 
-        // Check each cert in the pkcs7 chain to see if it matches the root CA
-        // If we can't find a matching serial number, then we can't verify the pkcs7 signature.
-        // That doesn't mean the signature is invalid, only that we don't have the required public key to verify it.
-        for cert in signers {
-            let subject = cert.subject_name();
-            let issuer = cert.issuer_name();
-            let serial = cert.serial_number();
-            let serial_num = serial.to_bn()?;
-            let serial_string = serial_num.to_dec_str()?;
-            debug!("Subject: {:?}", subject);
-            debug!("Issuer: {:?}", issuer);
-            debug!("Serial: {:?}", serial_string);
+                        // create store with root CA
+                        let mut store_builder = X509StoreBuilder::new()?;
+                        store_builder.add_cert(self.root_ca.clone())?;
+                        let store = store_builder.build();
 
-            if self.root_ca.serial_number() == serial {
-                // found a matching serial number in the pkcs7 cert chain for the provided root CA.
-                // We can verify the signature.
+                        // verify signature
+                        let certs = stack::Stack::new()?;
+                        let flags = Pkcs7Flags::DETACHED | Pkcs7Flags::BINARY;
+                        let mut output = Vec::new();
 
-                // create store with root CA
-                let mut store_builder = X509StoreBuilder::new().expect("should succeed");
-                store_builder
-                    .add_cert(self.root_ca.clone())
-                    .expect("should succeed");
-                let store = store_builder.build();
+                        let result =
+                            pkcs7.verify(&certs, &store, Some(data), Some(&mut output), flags);
 
-                // verify signature
-                let mut output = Vec::new();
-                let result = pkcs7.verify(&certs, &store, Some(data), Some(&mut output), flags);
-
-                match result {
-                    Ok(()) => {
-                        debug!("Signature verified");
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        eprintln!("Error verifying signature: {}", e);
-                        return Err(Error::InvalidDigitalSignature(e.to_string()));
+                        match result {
+                            Ok(()) => {
+                                debug!("Signature verified");
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                eprintln!("Error verifying signature: {}", e);
+                                return Err(Error::InvalidDigitalSignature(e.to_string()));
+                            }
+                        }
+                    } else {
+                        debug!(
+                            "Certificate serial does not match: {:?}",
+                            serial.to_dec_str()?
+                        );
                     }
                 }
             }
         }
 
+        debug!("The serial for this public key does not match any serial number in the signature's certificate chain.");
         Err(Error::IncorrectPublicKey)
     }
 }

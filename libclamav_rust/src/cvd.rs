@@ -42,6 +42,7 @@ pub enum Error {
 }
 
 pub struct CVD {
+    pub name: String,
     pub time_creation: SystemTime,
     pub version: u32,
     pub num_sigs: u32,
@@ -55,6 +56,7 @@ pub struct CVD {
 
 impl CVD {
     pub fn new(
+        name: String,
         time_creation: SystemTime,
         version: u32,
         num_sigs: u32,
@@ -66,6 +68,7 @@ impl CVD {
     ) -> Self {
         let file = File::open(&path).unwrap();
         Self {
+            name,
             time_creation,
             version,
             num_sigs,
@@ -82,6 +85,26 @@ impl CVD {
         let file = File::open(file_path)
             .map_err(|_| Error::Parse(format!("Failed to open file: {:?}", file_path)))?;
         let mut reader = BufReader::new(&file);
+
+        // We need to extract the name from the filename.
+        // CVD filenames are usually either:
+        //   name.cvd
+        // or:
+        //   name-version.cvd
+        // where version is a number.
+        let database_file_stem = file_path.file_stem().ok_or_else(|| {
+            Error::Parse("Failed to get database file stem from CVD file path".to_string())
+        })?;
+        let database_file_stem_str = database_file_stem
+            .to_str()
+            .ok_or_else(|| Error::Parse("Database file stem is not valid unicode".to_string()))?;
+        let name = database_file_stem_str
+            .split(|c| c == '-' || c == '.')
+            .next()
+            .ok_or_else(|| {
+                Error::Parse("Failed to get database name from database file stem".to_string())
+            })?
+            .to_string();
 
         // read the 512 byte header
         let mut header = [0; 512];
@@ -198,6 +221,7 @@ impl CVD {
         let time_creation = SystemTime::UNIX_EPOCH + Duration::from_secs(time_seconds);
 
         Ok(Self {
+            name,
             time_creation,
             version,
             num_sigs,
@@ -365,11 +389,17 @@ impl CVD {
                 return Ok(());
             }
             Err(codesign::Error::InvalidDigitalSignature(m)) => {
-                warn!("Detached CVD signature is invalid: {}", m);
+                warn!(
+                    "Failed to verify {:?} with {:?}: Signature is invalid: {}",
+                    self.path, signature_file_path, m
+                );
                 return Err(Error::InvalidDigitalSignature(m));
             }
             Err(e) => {
-                debug!("Detached CVD signature verification failed: {}", e);
+                debug!(
+                    "Failed to verify {:?} with {:?}: {}",
+                    self.path, signature_file_path, e
+                );
                 return Err(Error::CannotVerify(e.to_string()));
             }
         }
@@ -393,7 +423,10 @@ impl CVD {
                     return Err(Error::InvalidDigitalSignature(e));
                 }
                 Err(e) => {
-                    debug!("Failed to verify CVD with detached signature file: {}", e);
+                    debug!(
+                        "Failed to verify {:?} with detached signature file: {}",
+                        self.path, e
+                    );
                 }
             }
         } else {
@@ -636,6 +669,22 @@ pub unsafe extern "C" fn cvd_get_time_creation(cvd: *const c_void) -> u64 {
 pub unsafe extern "C" fn cvd_get_version(cvd: *const c_void) -> u32 {
     let cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
     cvd.version
+}
+
+/// C interface for getting the name of a CVD.
+/// Handles all the unsafe ffi stuff.
+/// Returns the version as a C string (aka char *).
+///
+/// # Safety
+///
+/// No parameters may be NULL
+/// The CVD pointer must be valid
+/// The caller is responsible for freeing the C string. See `ffi_cstring_free`.
+#[export_name = "cvd_get_name"]
+pub unsafe extern "C" fn cvd_get_name(cvd: *const c_void) -> *mut c_char {
+    let cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
+
+    CString::new(cvd.name.clone()).unwrap().into_raw()
 }
 
 /// C interface for getting the number of signatures in a CVD.

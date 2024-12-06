@@ -42,12 +42,14 @@ struct cli_dbio {
 };
 
 typedef enum cvd_type {
+    // unknown / uninitialized
+    CVD_TYPE_UNKNOWN,
     // signed signature archive
-    CVD_TYPE_CVD = 0,
+    CVD_TYPE_CVD,
     // unsigned signature archive that was updated from a CVD or CUD
-    CVD_TYPE_CLD = 1,
+    CVD_TYPE_CLD,
     // unsigned signature archive
-    CVD_TYPE_CUD = 2,
+    CVD_TYPE_CUD,
 } cvd_type;
 
 typedef void *cvd_t;

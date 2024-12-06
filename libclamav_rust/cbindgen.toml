@@ -28,6 +28,7 @@ include = [
   "cvd::cvd_free",
   "cvd::cvd_get_time_creation",
   "cvd::cvd_get_version",
+  "cvd::cvd_get_name",
   "cvd::cvd_get_num_sigs",
   "cvd::cvd_get_min_flevel",
   "cvd::cvd_get_builder",

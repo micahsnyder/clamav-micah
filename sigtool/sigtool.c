@@ -855,8 +855,109 @@ void removeTempDir(const struct optstruct *opts, char *dir)
     }
 }
 
+/**
+ * @brief Determine the name of the sign file based on the target file name.
+ *
+ * If the target file name ends with '.cvd', '.cud', or '.cld' then the sign file name will be
+ * 'name-version.cvd.sign', 'name-version.cud.sign', or 'name-version.cld.sign' respectively.
+ *
+ * If the target file name does not end with '.cvd', '.cud', or '.cld' then the sign file name will be
+ * 'target.sign'.
+ *
+ * The sign file name will be placed in the same directory as the target file.
+ *
+ * If the target file is a CVD file, the version number will be extracted from the CVD file.
+ *
+ * The caller is responsible for freeing the memory allocated for the sign file name.
+ *
+ * @param target  The target file name.
+ * @return char*
+ */
+static char *get_sign_file_name(char *target)
+{
+    char *sign_file_name  = NULL;
+    char *dir             = NULL;
+    FFIError *parse_error = NULL;
+    uint32_t cvd_version  = 0;
+    char *cvd_name        = NULL;
+    cvd_t *cvd            = NULL;
+    char *target_dup      = NULL;
+
+    cvd_type cvd_type         = CVD_TYPE_UNKNOWN;
+    const char *cvd_extension = NULL;
+
+    // If the target filename ends with '.cvd',
+    // the sign file name will be 'name-version.cvd.sign'
+    if (cli_strbcasestr(target, ".cvd")) {
+        cvd_type      = CVD_TYPE_CVD;
+        cvd_extension = "cvd";
+    } else if (cli_strbcasestr(target, ".cld")) {
+        cvd_type      = CVD_TYPE_CLD;
+        cvd_extension = "cld";
+    } else if (cli_strbcasestr(target, ".cud")) {
+        cvd_type      = CVD_TYPE_CUD;
+        cvd_extension = "cud";
+    }
+
+    if (cvd_type != CVD_TYPE_UNKNOWN) {
+        // Signing a signature archive.  We need to open the CVD file to get the version to use in the .sign file name.
+        cvd = cvd_open(target, &parse_error);
+        if (NULL == cvd) {
+            mprintf(LOGG_ERROR, "get_sign_file_name: Failed to open CVD file '%s': %s\n", target, ffierror_fmt(parse_error));
+            goto done;
+        }
+
+        cvd_version = cvd_get_version(cvd);
+        cvd_name    = cvd_get_name(cvd);
+
+        // get the directory from the target filename
+        target_dup = strdup(target);
+        if (NULL == target_dup) {
+            mprintf(LOGG_ERROR, "get_sign_file_name: Failed to duplicate target filepath.\n");
+            goto done;
+        }
+        dir = dirname(target_dup);
+        if (NULL == dir) {
+            mprintf(LOGG_ERROR, "get_sign_file_name: Failed to get directory from target filename.\n");
+            goto done;
+        }
+
+        sign_file_name = calloc(1, strlen(dir) + 1 + strlen(cvd_name) + 1 + (3 * sizeof(uint32_t) + 2) + 1 + strlen(cvd_extension) + strlen(".sign") + 1);
+        if (NULL == sign_file_name) {
+            mprintf(LOGG_ERROR, "get_sign_file_name: Memory allocation error.\n");
+            goto done;
+        }
+
+        sprintf(sign_file_name, "%s/%s-%u.%s.sign", dir, cvd_name, cvd_version, cvd_extension);
+    } else {
+        // sign file name will just be the target filename with an added '.sign' extension
+        sign_file_name = malloc(strlen(target) + strlen(".sign") + 1);
+        if (NULL == sign_file_name) {
+            mprintf(LOGG_ERROR, "get_sign_file_name: Memory allocation error.\n");
+            goto done;
+        }
+        strcpy(sign_file_name, target);
+        strcat(sign_file_name, ".sign");
+    }
+
+done:
+
+    if (NULL != cvd_name) {
+        ffi_cstring_free(cvd_name);
+    }
+    if (NULL != cvd) {
+        cvd_free(cvd);
+    }
+    if (NULL != target_dup) {
+        free(target_dup);
+    }
+
+    return sign_file_name;
+}
+
 static int sign(const struct optstruct *opts)
 {
+    int ret = -1;
     const struct optstruct *opt;
 
     char *target         = NULL;
@@ -876,24 +977,21 @@ static int sign(const struct optstruct *opts)
         mprintf(LOGG_ERROR, "sign: No target file specified.\n");
         mprintf(LOGG_ERROR, "To sign a file with sigtool, you must specify a target file and use the --key and --cert options.\n");
         mprintf(LOGG_ERROR, "For example:  sigtool --sign myfile.cvd --key /path/to/private.key --cert /path/to/public.pem --cert /path/to/intermediate.pem --cert /path/to/root-ca.pem\n");
-        return -1;
+        goto done;
     }
 
-    // sign file name will be the target filename with an added '.sign' extension
-    sign_file_name = malloc(strlen(target) + strlen(".sign") + 1);
+    sign_file_name = get_sign_file_name(target);
     if (NULL == sign_file_name) {
-        mprintf(LOGG_ERROR, "sign: Memory allocation error.\n");
-        return -1;
+        mprintf(LOGG_ERROR, "sign: Failed to determine sign file name from target: %s\n", target);
+        goto done;
     }
-    strcpy(sign_file_name, target);
-    strcat(sign_file_name, ".sign");
 
     signing_key = optget(opts, "key")->strarg;
     if (NULL == target) {
         mprintf(LOGG_ERROR, "sign: No private key specified.\n");
         mprintf(LOGG_ERROR, "To sign a file with sigtool, you must specify a target file and use the --key and --cert options.\n");
         mprintf(LOGG_ERROR, "For example:  sigtool --sign myfile.cvd --key /path/to/private.key --cert /path/to/public.pem --cert /path/to/intermediate.pem --cert /path/to/root-ca.pem\n");
-        return -1;
+        goto done;
     }
 
     opt = optget(opts, "cert");
@@ -901,7 +999,7 @@ static int sign(const struct optstruct *opts)
         mprintf(LOGG_ERROR, "sign: No signing or intermediate certificates specified.\n");
         mprintf(LOGG_ERROR, "To sign a file with sigtool, you must specify a target file and use the --key and --cert options.\n");
         mprintf(LOGG_ERROR, "For example:  sigtool --sign myfile.cvd --key /path/to/private.key --cert /path/to/public.pem --cert /path/to/intermediate.pem --cert /path/to/root-ca.pem\n");
-        return -1;
+        goto done;
     }
 
     while (opt) {
@@ -909,7 +1007,7 @@ static int sign(const struct optstruct *opts)
             mprintf(LOGG_ERROR, "sign: The --cert option requires a path value to a signing or intermediate certificate.\n");
             mprintf(LOGG_ERROR, "To sign a file with sigtool, you must specify a target file and use the --key and --cert options.\n");
             mprintf(LOGG_ERROR, "For example:  sigtool --sign myfile.cvd --key /path/to/private.key --cert /path/to/public.pem --cert /path/to/intermediate.pem --cert /path/to/root-ca.pem\n");
-            return -1;
+            goto done;
         }
 
         // The first --cert option is the signing certificate
@@ -924,7 +1022,7 @@ static int sign(const struct optstruct *opts)
         intermediate_certs = realloc(intermediate_certs, intermediate_certs_count * sizeof(char *));
         if (NULL == intermediate_certs) {
             mprintf(LOGG_ERROR, "sign: Memory allocation error.\n");
-            return -1;
+            goto done;
         }
 
         intermediate_certs[intermediate_certs_count - 1] = opt->strarg;
@@ -943,15 +1041,27 @@ static int sign(const struct optstruct *opts)
 
     if (!sign_result) {
         mprintf(LOGG_ERROR, "sign: Failed to sign file '%s': %s\n", target, ffierror_fmt(sign_error));
-        return -1;
-    } else {
-        mprintf(LOGG_INFO, "sign: Successfully signed file '%s', and placed the signature in '%s'\n", target, sign_file_name);
-        return 0;
+        goto done;
     }
+
+    mprintf(LOGG_INFO, "sign: Successfully signed file '%s', and placed the signature in '%s'\n", target, sign_file_name);
+    ret = 0;
+
+done:
+
+    if (NULL != sign_file_name) {
+        free(sign_file_name);
+    }
+    if (NULL != intermediate_certs) {
+        free(intermediate_certs);
+    }
+
+    return ret;
 }
 
 static int verify(const struct optstruct *opts)
 {
+    int ret              = -1;
     char *target         = NULL;
     char *sign_file_name = NULL;
 
@@ -965,17 +1075,14 @@ static int verify(const struct optstruct *opts)
         mprintf(LOGG_ERROR, "verify: No target file specified.\n");
         mprintf(LOGG_ERROR, "To verify a file signed with sigtool, you must specify a target file. You may also override the default certificates directory using --certsdir.\n");
         mprintf(LOGG_ERROR, "For example:  sigtool --verify myfile.cvd --certsdir /path/to/certs/\n");
-        return -1;
+        goto done;
     }
 
-    // sign file name will be the target filename with an added '.sign' extension
-    sign_file_name = malloc(strlen(target) + strlen(".sign") + 1);
+    sign_file_name = get_sign_file_name(target);
     if (NULL == sign_file_name) {
-        mprintf(LOGG_ERROR, "sign: Memory allocation error.\n");
-        return -1;
+        mprintf(LOGG_ERROR, "verify: Failed to determine sign file name.\n");
+        goto done;
     }
-    strcpy(sign_file_name, target);
-    strcat(sign_file_name, ".sign");
 
     certsdir = optget(opts, "certsdir")->strarg;
     if (NULL == certsdir) {
@@ -990,11 +1097,19 @@ static int verify(const struct optstruct *opts)
 
     if (!verify_result) {
         mprintf(LOGG_ERROR, "verify: Failed to verify file '%s': %s\n", target, ffierror_fmt(verify_error));
-        return -1;
-    } else {
-        mprintf(LOGG_INFO, "verify: Successfully verified file '%s' with signature '%s'\n", target, sign_file_name);
-        return 0;
+        goto done;
     }
+
+    mprintf(LOGG_INFO, "verify: Successfully verified file '%s' with signature '%s'\n", target, sign_file_name);
+    ret = 0;
+
+done:
+
+    if (NULL != sign_file_name) {
+        free(sign_file_name);
+    }
+
+    return ret;
 }
 
 static int build(const struct optstruct *opts)
@@ -3792,22 +3907,41 @@ static void help(void)
     mprintf(LOGG_INFO, "    --quiet                                Be quiet, output only error messages\n");
     mprintf(LOGG_INFO, "    --debug                                Enable debug messages\n");
     mprintf(LOGG_INFO, "    --stdout                               Write to stdout instead of stderr. Does not affect 'debug' messages.\n");
-    mprintf(LOGG_INFO, "    --hex-dump                             Convert data from stdin to a hex\n");
-    mprintf(LOGG_INFO, "                                           string and print it on stdout\n");
-    mprintf(LOGG_INFO, "    --md5 [FILES]                          Generate MD5 checksum from stdin\n");
+    mprintf(LOGG_INFO, "    --tempdir=DIRECTORY                    Create temporary files in DIRECTORY\n");
+    mprintf(LOGG_INFO, "    --leave-temps[=yes/no(*)]              Do not remove temporary files\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "  Commands to generate signatures:\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    --md5 [FILES]                          Generate MD5 hash from stdin\n");
     mprintf(LOGG_INFO, "                                           or MD5 sigs for FILES\n");
-    mprintf(LOGG_INFO, "    --sha1 [FILES]                         Generate SHA1 checksum from stdin\n");
+    mprintf(LOGG_INFO, "    --sha1 [FILES]                         Generate SHA1 hash from stdin\n");
     mprintf(LOGG_INFO, "                                           or SHA1 sigs for FILES\n");
-    mprintf(LOGG_INFO, "    --sha256 [FILES]                       Generate SHA256 checksum from stdin\n");
+    mprintf(LOGG_INFO, "    --sha256 [FILES]                       Generate SHA256 hash from stdin\n");
     mprintf(LOGG_INFO, "                                           or SHA256 sigs for FILES\n");
     mprintf(LOGG_INFO, "    --mdb [FILES]                          Generate .mdb (section hash) sigs\n");
     mprintf(LOGG_INFO, "    --imp [FILES]                          Generate .imp (import table hash) sigs\n");
     mprintf(LOGG_INFO, "    --fuzzy-img FILE(S)                    Generate image fuzzy hash for each file\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "  Commands to normalize files, so you can write more generic signatures:\n");
+    mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "    --html-normalise=FILE                  Create normalised parts of HTML file\n");
     mprintf(LOGG_INFO, "    --ascii-normalise=FILE                 Create normalised text file from ascii source\n");
     mprintf(LOGG_INFO, "    --utf16-decode=FILE                    Decode UTF16 encoded files\n");
-    mprintf(LOGG_INFO, "    --info=FILE            -i FILE         Print database information\n");
-    mprintf(LOGG_INFO, "    --build=NAME [cvd] -b NAME             Build a CVD file\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "  Assorted commands to aid file analysis:\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    --vba=FILE                             Extract VBA/Word6 macro code\n");
+    mprintf(LOGG_INFO, "    --vba-hex=FILE                         Extract Word6 macro code with hex values\n");
+    mprintf(LOGG_INFO, "    --print-certs=FILE                     Print Authenticode details from a PE\n");
+    mprintf(LOGG_INFO, "    --hex-dump                             Convert data from stdin to a hex\n");
+    mprintf(LOGG_INFO, "                                           string and print it on stdout\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "  Commands for working with CVD signature database archives:\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    --info=FILE            -i FILE         Print CVD database archive information\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    --build=NAME [cvd] -b NAME             Build a CVD file.\n");
+    mprintf(LOGG_INFO, "                                           The following options augment --build.\n");
     mprintf(LOGG_INFO, "    --max-bad-sigs=NUMBER                  Maximum number of mismatched signatures\n");
     mprintf(LOGG_INFO, "                                           When building a CVD. Default: 3000\n");
     mprintf(LOGG_INFO, "    --flevel=FLEVEL                        Specify a custom flevel.\n");
@@ -3821,28 +3955,62 @@ static void help(void)
     mprintf(LOGG_INFO, "                                           prompt.  NOTE: If a CVD is found in the\n");
     mprintf(LOGG_INFO, "                                           --datadir its version+1 is used and\n");
     mprintf(LOGG_INFO, "                                           this value is ignored.\n");
-    mprintf(LOGG_INFO, "    --no-cdiff                             Don't generate .cdiff file\n");
+    mprintf(LOGG_INFO, "    --no-cdiff                             Don't generate .cdiff file.\n");
+    mprintf(LOGG_INFO, "                                           If not specified, --build will try to\n");
+    mprintf(LOGG_INFO, "                                           create a cdiff by comparing with the\n");
+    mprintf(LOGG_INFO, "                                           current CVD in --datadir\n");
+    mprintf(LOGG_INFO, "                                           If no datafile is found the default\n");
+    mprintf(LOGG_INFO, "                                           behaviour is to skip making a CDIFF.\n");
+    mprintf(LOGG_INFO, "    --hybrid                               Create a hybrid (standard and bytecode)\n");
+    mprintf(LOGG_INFO, "                                           database file\n");
     mprintf(LOGG_INFO, "    --unsigned                             Create unsigned database file (.cud)\n");
-    mprintf(LOGG_INFO, "    --hybrid                               Create a hybrid (standard and bytecode) database file\n");
-    mprintf(LOGG_INFO, "    --print-certs=FILE                     Print Authenticode details from a PE\n");
     mprintf(LOGG_INFO, "    --server=ADDR                          ClamAV Signing Service address\n");
     mprintf(LOGG_INFO, "    --datadir=DIR                          Use DIR as default database directory\n");
+    mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "    --unpack=FILE          -u FILE         Unpack a CVD/CLD file\n");
+    mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "    --unpack-current=SHORTNAME             Unpack local CVD/CLD into cwd\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "  Commands for working with signatures:\n");
+    mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "    --list-sigs[=FILE]     -l[FILE]        List signature names\n");
     mprintf(LOGG_INFO, "    --find-sigs=REGEX      -fREGEX         Find signatures matching REGEX\n");
     mprintf(LOGG_INFO, "    --decode-sigs                          Decode signatures from stdin\n");
     mprintf(LOGG_INFO, "    --test-sigs=DATABASE TARGET_FILE       Test signatures from DATABASE against \n");
     mprintf(LOGG_INFO, "                                           TARGET_FILE\n");
-    mprintf(LOGG_INFO, "    --vba=FILE                             Extract VBA/Word6 macro code\n");
-    mprintf(LOGG_INFO, "    --vba-hex=FILE                         Extract Word6 macro code with hex values\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "  Commands for working with CDIFF patch files:\n");
+    mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "    --diff=OLD NEW         -d OLD NEW      Create diff for OLD and NEW CVDs\n");
     mprintf(LOGG_INFO, "    --compare=OLD NEW      -c OLD NEW      Show diff between OLD and NEW files in\n");
     mprintf(LOGG_INFO, "                                           cdiff format\n");
     mprintf(LOGG_INFO, "    --run-cdiff=FILE       -r FILE         Execute update script FILE in cwd\n");
     mprintf(LOGG_INFO, "    --verify-cdiff=DIFF CVD/CLD            Verify DIFF against CVD/CLD\n");
-    mprintf(LOGG_INFO, "    --tempdir=DIRECTORY                    Create temporary files in DIRECTORY\n");
-    mprintf(LOGG_INFO, "    --leave-temps[=yes/no(*)]              Do not remove temporary files\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "  Commands creating and verifying .sign detached digital signatures:\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    --sign /path/to/filename               Sign a file.\n");
+    mprintf(LOGG_INFO, "                                           The resulting .sign file name will\n");
+    mprintf(LOGG_INFO, "                                           be in the form: filename-version.cvd.sign\n");
+    mprintf(LOGG_INFO, "                                           or filename.sign for non-CVD targets.\n");
+    mprintf(LOGG_INFO, "                                           It will be created next to the target file.\n");
+    mprintf(LOGG_INFO, "                                           If a .sign file already exists, then the\n");
+    mprintf(LOGG_INFO, "                                           new signature will be appended to file.\n");
+    mprintf(LOGG_INFO, "    --key /path/to/private.key             Specify a signing key.\n");
+    mprintf(LOGG_INFO, "    --cert /path/to/private.key            Specify a signing cert.\n");
+    mprintf(LOGG_INFO, "                                           May be used more than once to add\n");
+    mprintf(LOGG_INFO, "                                           intermediate and root certificates.\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    --verify /path/to/filename             Find and verify a detached digital\n");
+    mprintf(LOGG_INFO, "                                           signature for the given file.\n");
+    mprintf(LOGG_INFO, "                                           The digital signature file name must\n");
+    mprintf(LOGG_INFO, "                                           be in the form: filename-version.cvd.sign\n");
+    mprintf(LOGG_INFO, "                                           or filename.sign for non-CVD targets.\n");
+    mprintf(LOGG_INFO, "                                           It must be found next to the target file.\n");
+    mprintf(LOGG_INFO, "    --certsdir /path/to/certs/             Specify a directory containing the root\n");
+    mprintf(LOGG_INFO, "                                           CA cert needed to verify the signature.\n");
+    mprintf(LOGG_INFO, "                                           If not provided, then sigtool will look in:\n");
+    mprintf(LOGG_INFO, "                                           " CERTSDIR "\n");
     mprintf(LOGG_INFO, "\n");
 
     return;
