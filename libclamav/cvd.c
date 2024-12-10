@@ -568,27 +568,34 @@ cl_error_t cli_cvdload(struct cl_engine *engine, unsigned int *signo, unsigned i
     cl_error_t ret;
     time_t s_time;
     struct cli_dbio dbio;
-    struct cli_dbinfo *dbinfo = NULL;
-    char *dupname             = NULL;
-    cvd_t *cvd                = NULL;
-    cvd_t *dupcvd             = NULL;
-    FFIError *err             = NULL;
+    struct cli_dbinfo *dbinfo  = NULL;
+    char *dupname              = NULL;
+    cvd_t *cvd                 = NULL;
+    cvd_t *dupcvd              = NULL;
+    FFIError *cvd_open_error   = NULL;
+    FFIError *cvd_verify_error = NULL;
+    char *signer_name          = NULL;
 
     dbio.hashctx = NULL;
 
     cli_dbgmsg("in cli_cvdload()\n");
 
     /* Open the cvd and read the header */
-    cvd = cvd_open(filename, &err);
+    cvd = cvd_open(filename, &cvd_open_error);
     if (!cvd) {
-        cli_errmsg("cli_cvdload: Can't open CVD file %s: %s\n", filename, ffierror_fmt(err));
+        cli_errmsg("cli_cvdload: Can't open CVD file %s: %s\n", filename, ffierror_fmt(cvd_open_error));
         goto done;
     }
 
     /* For actual .cvd files, verify the digital signature. */
     if (dbtype == CVD_TYPE_CVD) {
-        if (!cvd_verify(cvd, engine->certs_directory, false, &err)) {
-            cli_errmsg("cli_cvdload: Can't verify CVD file %s: %s\n", filename, ffierror_fmt(err));
+        if (!cvd_verify(
+                cvd,
+                engine->certs_directory,
+                false,
+                &signer_name,
+                &cvd_verify_error)) {
+            cli_errmsg("cli_cvdload: Can't verify CVD file %s: %s\n", filename, ffierror_fmt(cvd_verify_error));
             status = CL_EVERIFY;
             goto done;
         }
@@ -607,7 +614,7 @@ cl_error_t cli_cvdload(struct cl_engine *engine, unsigned int *signo, unsigned i
 
         dupname[strlen(dupname) - 2] = (dbtype == CVD_TYPE_CLD ? 'v' : 'l');
 
-        dupcvd = cvd_open(dupname, &err);
+        dupcvd = cvd_open(dupname, &cvd_open_error);
         if (dupcvd) {
             if (cvd_get_version(dupcvd) > cvd_get_version(cvd)) {
                 cli_warnmsg("Detected duplicate databases %s and %s. The %s database is older and will not be loaded, you should manually remove it from the database directory.\n", filename, dupname, filename);
@@ -618,6 +625,12 @@ cl_error_t cli_cvdload(struct cl_engine *engine, unsigned int *signo, unsigned i
                 cli_warnmsg("Detected duplicate databases %s and %s, please manually remove one of them\n", filename, dupname);
                 status = CL_SUCCESS;
                 goto done;
+            }
+        } else {
+            // If the .cld file doesn't exist, it's not an error.
+            if (NULL != cvd_open_error) {
+                ffierror_free(cvd_open_error);
+                cvd_open_error = NULL;
             }
         }
     }
@@ -699,6 +712,9 @@ done:
         MPOOL_FREE(engine->mempool, dbinfo);
     }
 
+    if (NULL != signer_name) {
+        ffi_cstring_free(signer_name);
+    }
     free(dupname);
     if (NULL != cvd) {
         cvd_free(cvd);
@@ -706,40 +722,61 @@ done:
     if (NULL != dupcvd) {
         cvd_free(dupcvd);
     }
+    if (NULL != cvd_open_error) {
+        ffierror_free(cvd_open_error);
+    }
+    if (NULL != cvd_verify_error) {
+        ffierror_free(cvd_verify_error);
+    }
 
     return status;
 }
 
 cl_error_t cl_cvdunpack(const char *file, const char *dir, bool dont_verify)
 {
-    cl_error_t status = CL_SUCCESS;
-    cvd_t *cvd        = NULL;
-    FFIError *err     = NULL;
+    cl_error_t status          = CL_SUCCESS;
+    cvd_t *cvd                 = NULL;
+    FFIError *cvd_open_error   = NULL;
+    FFIError *cvd_verify_error = NULL;
+    FFIError *cvd_unpack_error = NULL;
+    char *signer_name          = NULL;
 
-    cvd = cvd_open(file, &err);
+    cvd = cvd_open(file, &cvd_open_error);
     if (!cvd) {
-        cli_errmsg("Can't open CVD file %s: %s\n", file, ffierror_fmt(err));
+        cli_errmsg("Can't open CVD file %s: %s\n", file, ffierror_fmt(cvd_open_error));
         return CL_EOPEN;
     }
 
     if (!dont_verify) {
-        if (!cvd_verify(cvd, NULL, false, &err)) {
-            cli_errmsg("CVD verification failed: %s\n", ffierror_fmt(err));
+        if (!cvd_verify(cvd, NULL, false, &signer_name, &cvd_verify_error)) {
+            cli_errmsg("CVD verification failed: %s\n", ffierror_fmt(cvd_verify_error));
             status = CL_EVERIFY;
             goto done;
         }
     }
 
-    if (!cvd_unpack(cvd, dir, &err)) {
-        cli_errmsg("CVD unpacking failed: %s\n", ffierror_fmt(err));
+    if (!cvd_unpack(cvd, dir, &cvd_unpack_error)) {
+        cli_errmsg("CVD unpacking failed: %s\n", ffierror_fmt(cvd_unpack_error));
         status = CL_EUNPACK;
         goto done;
     }
 
 done:
 
+    if (NULL != signer_name) {
+        ffi_cstring_free(signer_name);
+    }
     if (NULL != cvd) {
         cvd_free(cvd);
+    }
+    if (NULL != cvd_open_error) {
+        ffierror_free(cvd_open_error);
+    }
+    if (NULL != cvd_verify_error) {
+        ffierror_free(cvd_verify_error);
+    }
+    if (NULL != cvd_unpack_error) {
+        ffierror_free(cvd_unpack_error);
     }
 
     return status;
@@ -747,34 +784,49 @@ done:
 
 cl_error_t cl_cvdunpack_ex(const char *file, const char *dir, bool dont_verify, const char *certs_directory)
 {
-    cl_error_t status = CL_SUCCESS;
-    cvd_t *cvd        = NULL;
-    FFIError *err     = NULL;
+    cl_error_t status          = CL_SUCCESS;
+    cvd_t *cvd                 = NULL;
+    FFIError *cvd_open_error   = NULL;
+    FFIError *cvd_verify_error = NULL;
+    FFIError *cvd_unpack_error = NULL;
+    char *signer_name          = NULL;
 
-    cvd = cvd_open(file, &err);
+    cvd = cvd_open(file, &cvd_open_error);
     if (!cvd) {
-        cli_errmsg("Can't open CVD file %s: %s\n", file, ffierror_fmt(err));
+        cli_errmsg("Can't open CVD file %s: %s\n", file, ffierror_fmt(cvd_open_error));
         return CL_EOPEN;
     }
 
     if (!dont_verify) {
-        if (!cvd_verify(cvd, certs_directory, false, &err)) {
-            cli_errmsg("CVD verification failed: %s\n", ffierror_fmt(err));
+        if (!cvd_verify(cvd, certs_directory, false, &signer_name, &cvd_verify_error)) {
+            cli_errmsg("CVD verification failed: %s\n", ffierror_fmt(cvd_verify_error));
             status = CL_EVERIFY;
             goto done;
         }
     }
 
-    if (!cvd_unpack(cvd, dir, &err)) {
-        cli_errmsg("CVD unpacking failed: %s\n", ffierror_fmt(err));
+    if (!cvd_unpack(cvd, dir, &cvd_unpack_error)) {
+        cli_errmsg("CVD unpacking failed: %s\n", ffierror_fmt(cvd_unpack_error));
         status = CL_EUNPACK;
         goto done;
     }
 
 done:
 
+    if (NULL != signer_name) {
+        ffi_cstring_free(signer_name);
+    }
     if (NULL != cvd) {
         cvd_free(cvd);
+    }
+    if (NULL != cvd_open_error) {
+        ffierror_free(cvd_open_error);
+    }
+    if (NULL != cvd_verify_error) {
+        ffierror_free(cvd_verify_error);
+    }
+    if (NULL != cvd_unpack_error) {
+        ffierror_free(cvd_unpack_error);
     }
 
     return status;
@@ -783,13 +835,13 @@ done:
 static cl_error_t cvdgetfileage(const char *path, time_t *age_seconds)
 {
     time_t s_time;
-    cl_error_t status = CL_EOPEN;
-    cvd_t *cvd        = NULL;
-    FFIError *err     = NULL;
+    cl_error_t status        = CL_EOPEN;
+    cvd_t *cvd               = NULL;
+    FFIError *cvd_open_error = NULL;
 
-    cvd = cvd_open(path, &err);
+    cvd = cvd_open(path, &cvd_open_error);
     if (!cvd) {
-        cli_errmsg("Can't open CVD file %s: %s\n", path, ffierror_fmt(err));
+        cli_errmsg("Can't open CVD file %s: %s\n", path, ffierror_fmt(cvd_open_error));
         goto done;
     }
 
@@ -806,6 +858,9 @@ static cl_error_t cvdgetfileage(const char *path, time_t *age_seconds)
 done:
     if (NULL != cvd) {
         cvd_free(cvd);
+    }
+    if (NULL != cvd_open_error) {
+        ffierror_free(cvd_open_error);
     }
 
     return status;

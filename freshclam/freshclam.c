@@ -815,7 +815,16 @@ static fc_error_t initialize(struct optstruct *opts)
      * Verify that the clamav ca certificates directory exists.
      * Create certs directory if missing.
      */
-    fcConfig.certsDirectory = optget(opts, "certsdir")->strarg;
+    fcConfig.certsDirectory = optget(opts, "cvdcertsdir")->strarg;
+    if (NULL == fcConfig.certsDirectory) {
+        // Check if the CVD_CERTS_DIR environment variable is set
+        fcConfig.certsDirectory = getenv("CVD_CERTS_DIR");
+
+        // If not, use the default value
+        if (NULL == fcConfig.certsDirectory) {
+            fcConfig.certsDirectory = CERTSDIR;
+        }
+    }
 
     if (LSTAT(fcConfig.certsDirectory, &statbuf) == -1) {
         logg(LOGG_ERROR,

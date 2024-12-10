@@ -187,8 +187,12 @@ pub enum InputError {
     LineNotUnicode(#[from] std::str::Utf8Error),
 
     /// Errors encountered while executing a command
-    #[error("processing: {0}")]
+    #[error("Processing: {0}")]
     Processing(#[from] ProcessingError),
+
+    /// Errors encountered while executing a command
+    #[error("Processing: {0}")]
+    ProcessingString(String),
 
     #[error("no final newline")]
     MissingNL,
@@ -781,17 +785,35 @@ fn cmd_move(ctx: &mut Context, move_op: MoveOp) -> Result<(), InputError> {
     let mut dst_file = OpenOptions::new()
         .append(true)
         .open(&move_op.dst)
-        .map_err(|e| InputError::Processing(e.into()))?;
+        .map_err(|e| {
+            InputError::ProcessingString(format!(
+                "Failed to open destination file {:?} for MOVE command: {}",
+                &move_op.dst,
+                e.to_string()
+            ))
+        })?;
 
     // Create tmp file and open for writing
     let tmp_named_file = tempfile::Builder::new()
         .prefix("_tmp_move_file")
         .tempfile_in("./")
-        .map_err(|e| InputError::Processing(e.into()))?;
+        .map_err(|e| {
+            InputError::ProcessingString(format!(
+                "Failed to create temp file in current directory {:?} for MOVE command: {}",
+                std::env::current_dir(),
+                e.to_string()
+            ))
+        })?;
     let mut tmp_file = tmp_named_file.as_file();
 
     // Open src in read-only mode
-    let mut src_reader = BufReader::new(File::open(&move_op.src).map_err(ProcessingError::from)?);
+    let mut src_reader = BufReader::new(File::open(&move_op.src).map_err(|e| {
+        InputError::ProcessingString(format!(
+            "Failed to open source file {:?}: {} for MOVE command",
+            &move_op.src,
+            e.to_string()
+        ))
+    })?);
 
     let mut line = vec![];
     let mut line_no = 0;
@@ -799,9 +821,13 @@ fn cmd_move(ctx: &mut Context, move_op: MoveOp) -> Result<(), InputError> {
         // cdiff files start at line 1
         line_no += 1;
         line.clear();
-        let n_read = src_reader
-            .read_until(b'\n', &mut line)
-            .map_err(ProcessingError::from)?;
+        let n_read = src_reader.read_until(b'\n', &mut line).map_err(|e| {
+            InputError::ProcessingString(format!(
+                "Failed to read from source file {:?} for MOVE command: {}",
+                &move_op.src,
+                e.to_string()
+            ))
+        })?;
         if n_read == 0 {
             break;
         }
@@ -830,7 +856,13 @@ fn cmd_move(ctx: &mut Context, move_op: MoveOp) -> Result<(), InputError> {
         }
         // Write everything outside of start and end to tmp
         else {
-            tmp_file.write_all(&line).map_err(ProcessingError::from)?;
+            tmp_file.write_all(&line).map_err(|e| {
+                InputError::ProcessingString(format!(
+                    "Failed to write line to temp file {:?} for MOVE command: {}",
+                    tmp_named_file.path(),
+                    e.to_string()
+                ))
+            })?;
         }
     }
 
@@ -845,8 +877,21 @@ fn cmd_move(ctx: &mut Context, move_op: MoveOp) -> Result<(), InputError> {
 
     // Delete src and replace it with tmp
     #[cfg(windows)]
-    fs::remove_file(&move_op.src).map_err(ProcessingError::from)?;
-    fs::rename(tmp_named_file.path(), &move_op.src).map_err(ProcessingError::from)?;
+    fs::remove_file(&move_op.src).map_err(|e| {
+        InputError::ProcessingString(format!(
+            "Failed to remove original source file {:?} for MOVE command: {}",
+            &move_op.src,
+            e.to_string()
+        ))
+    })?;
+    fs::rename(tmp_named_file.path(), &move_op.src).map_err(|e| {
+        InputError::ProcessingString(format!(
+            "Failed to rename temp file {:?} to {:?} for MOVE command: {}",
+            tmp_named_file.path(),
+            &move_op.src,
+            e.to_string()
+        ))
+    })?;
 
     Ok(())
 }
@@ -863,22 +908,38 @@ fn cmd_close(ctx: &mut Context) -> Result<(), InputError> {
 
     if next_edit.is_some() {
         // Open src in read-only mode
-        let mut src_reader = BufReader::new(File::open(&open_db).map_err(ProcessingError::from)?);
+        let mut src_reader = BufReader::new(File::open(&open_db).map_err(|e| {
+            InputError::ProcessingString(format!(
+                "Failed to open db file {:?} for CLOSE command: {}",
+                &open_db,
+                e.to_string()
+            ))
+        })?);
 
         // Create tmp file and open for writing
         let tmp_named_file = tempfile::Builder::new()
             .prefix("_tmp_move_file")
             .tempfile_in("./")
-            .map_err(ProcessingError::from)?;
+            .map_err(|e| {
+                InputError::ProcessingString(format!(
+                    "Failed to create temp file in current directory {:?} for CLOSE command: {}",
+                    std::env::current_dir(),
+                    e.to_string()
+                ))
+            })?;
         let tmp_file = tmp_named_file.as_file();
         let mut tmp_file = BufWriter::new(tmp_file);
 
         let mut linebuf = Vec::new();
         for line_no in 1.. {
             linebuf.clear();
-            let n_read = src_reader
-                .read_until(b'\n', &mut linebuf)
-                .map_err(ProcessingError::from)?;
+            let n_read = src_reader.read_until(b'\n', &mut linebuf).map_err(|e| {
+                InputError::ProcessingString(format!(
+                    "Failed to read temp file {:?} for CLOSE command: {}",
+                    tmp_named_file.path(),
+                    e.to_string()
+                ))
+            })?;
             if n_read == 0 {
                 // No more input
                 break;
@@ -924,10 +985,20 @@ fn cmd_close(ctx: &mut Context) -> Result<(), InputError> {
 
             // Anything to output?
             if let Some(new_line) = new_line {
-                tmp_file
-                    .write_all(new_line)
-                    .map_err(ProcessingError::from)?;
-                tmp_file.write_all(b"\n").map_err(ProcessingError::from)?;
+                tmp_file.write_all(new_line).map_err(|e| {
+                    InputError::ProcessingString(format!(
+                        "Failed to write line to temp file {:?} for CLOSE command: {}",
+                        tmp_named_file.path(),
+                        e.to_string()
+                    ))
+                })?;
+                tmp_file.write_all(b"\n").map_err(|e| {
+                    InputError::ProcessingString(format!(
+                        "Failed to write new line to temp file {:?} for CLOSE command: {}",
+                        tmp_named_file.path(),
+                        e.to_string()
+                    ))
+                })?;
             }
         }
 
@@ -961,12 +1032,35 @@ fn cmd_close(ctx: &mut Context) -> Result<(), InputError> {
         #[cfg(windows)]
         if let Err(e) = fs::remove_file(&open_db) {
             // Try to remove the tempfile, since we failed to remove the original
-            fs::remove_file(tmpfile_path).map_err(ProcessingError::from)?;
-            return Err(ProcessingError::from(e).into());
+            fs::remove_file(tmpfile_path).map_err(|e| {
+                InputError::ProcessingString(format!(
+                    "Failed to remove the temp file file {:?} for CLOSE command: {}",
+                    tmpfile_path,
+                    e.to_string()
+                ))
+            })?;
+            return Err(InputError::ProcessingString(format!(
+                "Failed to remove open db file {:?} for CLOSE command: {}",
+                &open_db,
+                e.to_string()
+            ))
+            .into());
         }
         if let Err(e) = fs::rename(&tmpfile_path, &open_db) {
-            fs::remove_file(&tmpfile_path).map_err(ProcessingError::from)?;
-            return Err(ProcessingError::from(e).into());
+            fs::remove_file(&tmpfile_path).map_err(|e| {
+                InputError::ProcessingString(format!(
+                    "Failed to remove temp file {:?}: {} for CLOSE command",
+                    &tmpfile_path,
+                    e.to_string()
+                ))
+            })?;
+            return Err(InputError::ProcessingString(format!(
+                "Failed to rename temp file {:?} to {:?} for CLOSE command: {}",
+                tmpfile_path,
+                &open_db,
+                e.to_string()
+            ))
+            .into());
         }
     }
 
@@ -976,10 +1070,20 @@ fn cmd_close(ctx: &mut Context) -> Result<(), InputError> {
             .create(true)
             .append(true)
             .open(&open_db)
-            .map_err(ProcessingError::from)?;
-        db_file
-            .write_all(&ctx.additions)
-            .map_err(ProcessingError::from)?;
+            .map_err(|e| {
+                InputError::ProcessingString(format!(
+                    "Failed to open db file {:?} for CLOSE command: {}",
+                    open_db,
+                    e.to_string()
+                ))
+            })?;
+        db_file.write_all(&ctx.additions).map_err(|e| {
+            InputError::ProcessingString(format!(
+                "Failed to write add lines to db {:?} for CLOSE command: {}",
+                open_db,
+                e.to_string()
+            ))
+        })?;
         ctx.additions.clear();
     }
 
@@ -997,7 +1101,13 @@ fn cmd_unlink(ctx: &mut Context, unlink_op: UnlinkOp) -> Result<(), InputError> 
     // We checked that the db_name doesn't have any '/' or '\\' in it before
     // adding to the UnlinkOp struct, so it's safe to say the path is just a local file and
     // won't accidentally delete something in a different directory.
-    fs::remove_file(unlink_op.db_name).map_err(ProcessingError::from)?;
+    fs::remove_file(unlink_op.db_name).map_err(|e| {
+        InputError::ProcessingString(format!(
+            "Failed to remove db file {:?} for UNLINK command: {}",
+            unlink_op.db_name,
+            e.to_string()
+        ))
+    })?;
 
     Ok(())
 }

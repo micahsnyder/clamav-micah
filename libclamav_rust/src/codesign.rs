@@ -2,6 +2,7 @@ use std::{
     ffi::CStr,
     fs::File,
     io::{prelude::*, BufReader},
+    os::raw::c_char,
     path::{Path, PathBuf},
 };
 
@@ -60,11 +61,11 @@ pub enum Error {
 /// No parameters may be NULL.
 #[export_name = "codesign_sign_file"]
 pub unsafe extern "C" fn codesign_sign_file(
-    target_file_path_str: *const std::os::raw::c_char,
-    signature_file_path_str: *const std::os::raw::c_char,
-    signing_key_path_str: *const std::os::raw::c_char,
-    signing_cert_path_str: *const std::os::raw::c_char,
-    intermediate_cert_paths_str: *const *const std::os::raw::c_char,
+    target_file_path_str: *const c_char,
+    signature_file_path_str: *const c_char,
+    signing_key_path_str: *const c_char,
+    signing_cert_path_str: *const c_char,
+    intermediate_cert_paths_str: *const *const c_char,
     intermediate_cert_paths_len: usize,
     err: *mut *mut FFIError,
 ) -> bool {
@@ -221,14 +222,18 @@ where
 /// C interface for verify_signed_file() which verifies a file's external digital signature.
 /// Handles all the unsafe ffi stuff.
 ///
+/// The signer_name output parameter is a pointer to a pointer to a C string.
+/// The caller is responsible for freeing the CString. See `ffi_cstring_free`.
+///
 /// # Safety
 ///
 /// No parameters may be NULL.
 #[export_name = "codesign_verify_file"]
 pub unsafe extern "C" fn codesign_verify_file(
-    signed_file_path_str: *const std::os::raw::c_char,
-    signature_file_path_str: *const std::os::raw::c_char,
-    certs_directory_str: *const std::os::raw::c_char,
+    signed_file_path_str: *const c_char,
+    signature_file_path_str: *const c_char,
+    certs_directory_str: *const c_char,
+    signer_name: *mut *mut c_char,
     err: *mut *mut FFIError,
 ) -> bool {
     let signed_file_path_str = validate_str_param!(signed_file_path_str);
@@ -273,9 +278,21 @@ pub unsafe extern "C" fn codesign_verify_file(
         }
     };
 
+    // verify that signer_name is not NULL
+    if signer_name.is_null() {
+        // invalid parameter
+        return ffi_error!(
+            err = err,
+            Error::CannotVerify("signer_name output parameter is NULL".to_string())
+        );
+    }
+
     match verify_signed_file(&signed_file_path, &signature_file_path, &certs_directory) {
-        Ok(()) => {
+        Ok(signer) => {
             debug!("CVD verified successfully");
+            // convert the signer_name to a CString and store it in the output parameter
+            let signer_cstr = std::ffi::CString::new(signer).unwrap();
+            *signer_name = signer_cstr.into_raw();
             true
         }
         Err(e) => {
@@ -287,11 +304,12 @@ pub unsafe extern "C" fn codesign_verify_file(
 /// Verifies a signed file.
 /// The signature file is expected to be in the ClamAV '.sign' format.
 /// The certificates directory is expected to contain the public keys of the signers.
+/// Returns the name of the signer.
 pub fn verify_signed_file(
     signed_file_path: &Path,
     signature_file_path: &Path,
     certs_directory: &Path,
-) -> Result<(), Error> {
+) -> Result<String, Error> {
     let signature_file: File = File::open(&signature_file_path)?;
 
     let mut signed_file: File = File::open(&signed_file_path)?;
@@ -365,8 +383,8 @@ pub fn verify_signed_file(
 
                             let verifier = Verifier::new(&cert_path)?;
                             match verifier.verify(&file_data, &pkcs7) {
-                                Ok(()) => {
-                                    return Ok(());
+                                Ok(signer) => {
+                                    return Ok(signer);
                                 }
                                 Err(Error::InvalidDigitalSignature(m)) => {
                                     warn!(
@@ -461,17 +479,32 @@ impl Verifier {
         Ok(Verifier { root_ca })
     }
 
-    pub fn verify(&self, data: &[u8], pkcs7: &Pkcs7) -> Result<(), Error> {
+    pub fn verify(&self, data: &[u8], pkcs7: &Pkcs7) -> Result<String, Error> {
         if let Some(signed) = pkcs7.signed() {
             if let Some(cert_stack) = signed.certificates() {
                 let root_ca_serial = self.root_ca.serial_number().to_bn()?;
                 debug!("Checking if the root CA's serial matches any in the signature's certificate stack...");
+                let mut top_level_signer: Option<String> = None;
 
                 // Check each cert in the pkcs7 cert stack to see if it matches the root CA.
                 // If we can't find a matching serial number, then we can't verify the pkcs7 signature.
                 // That doesn't mean the signature is invalid, only that we don't have the required public key to verify it.
                 for cert in cert_stack {
                     let serial = cert.serial_number().to_bn()?;
+                    if top_level_signer == None {
+                        let signer = cert
+                            .subject_name()
+                            .entries()
+                            .next()
+                            .ok_or(Error::InvalidDigitalSignature(
+                                "Certificate does not have any name entries".to_string(),
+                            ))?
+                            .data()
+                            .as_utf8()?
+                            .to_string();
+                        debug!("Top level signer serial: {}", signer);
+                        top_level_signer = Some(signer);
+                    }
 
                     if root_ca_serial == serial {
                         // found a matching serial number in the pkcs7 cert stack matching the provided root CA.
@@ -494,7 +527,7 @@ impl Verifier {
                         match result {
                             Ok(()) => {
                                 debug!("Signature verified");
-                                return Ok(());
+                                return Ok(top_level_signer.unwrap());
                             }
                             Err(e) => {
                                 eprintln!("Error verifying signature: {}", e);

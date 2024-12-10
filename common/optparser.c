@@ -286,7 +286,7 @@ const struct clam_option __clam_options[] = {
 
     {"DatabaseDirectory", "datadir", 0, CLOPT_TYPE_STRING, NULL, -1, CONST_DATADIR, 0, OPT_CLAMD | OPT_FRESHCLAM | OPT_SIGTOOL, "This option allows you to change the default database directory.\nIf you enable it, please make sure it points to the same directory in\nboth clamd and freshclam.", "/var/lib/clamav"},
 
-    {"CVDCertsDirectory", "certsdir", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_CLAMD | OPT_FRESHCLAM | OPT_SIGTOOL, "This option allows you to change the default ClamAV CA certificates directory used to verify database external digital signatures.\nIf you enable it, please make sure it points to the same directory in\nboth clamd and freshclam.", "/etc/clamav/certs"},
+    {"CVDCertsDirectory", "cvdcertsdir", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN | OPT_FRESHCLAM | OPT_SIGTOOL, "This option allows you to change the default ClamAV CA certificates directory used to verify database external digital signatures.\nIf you enable it, please make sure it points to the same directory in\nboth clamd and freshclam.", "/etc/clamav/certs"},
 
     {"OfficialDatabaseOnly", "official-db-only", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "Only load the official signatures published by the ClamAV project.", "no"},
 

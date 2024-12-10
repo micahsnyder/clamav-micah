@@ -875,13 +875,13 @@ void removeTempDir(const struct optstruct *opts, char *dir)
  */
 static char *get_sign_file_name(char *target)
 {
-    char *sign_file_name  = NULL;
-    char *dir             = NULL;
-    FFIError *parse_error = NULL;
-    uint32_t cvd_version  = 0;
-    char *cvd_name        = NULL;
-    cvd_t *cvd            = NULL;
-    char *target_dup      = NULL;
+    char *sign_file_name     = NULL;
+    char *dir                = NULL;
+    FFIError *cvd_open_error = NULL;
+    uint32_t cvd_version     = 0;
+    char *cvd_name           = NULL;
+    cvd_t *cvd               = NULL;
+    char *target_dup         = NULL;
 
     cvd_type cvd_type         = CVD_TYPE_UNKNOWN;
     const char *cvd_extension = NULL;
@@ -901,9 +901,9 @@ static char *get_sign_file_name(char *target)
 
     if (cvd_type != CVD_TYPE_UNKNOWN) {
         // Signing a signature archive.  We need to open the CVD file to get the version to use in the .sign file name.
-        cvd = cvd_open(target, &parse_error);
+        cvd = cvd_open(target, &cvd_open_error);
         if (NULL == cvd) {
-            mprintf(LOGG_ERROR, "get_sign_file_name: Failed to open CVD file '%s': %s\n", target, ffierror_fmt(parse_error));
+            mprintf(LOGG_ERROR, "get_sign_file_name: Failed to open CVD file '%s': %s\n", target, ffierror_fmt(cvd_open_error));
             goto done;
         }
 
@@ -951,6 +951,9 @@ done:
     if (NULL != target_dup) {
         free(target_dup);
     }
+    if (NULL != cvd_open_error) {
+        ffierror_free(cvd_open_error);
+    }
 
     return sign_file_name;
 }
@@ -969,8 +972,8 @@ static int sign(const struct optstruct *opts)
     char **intermediate_certs       = NULL;
     size_t intermediate_certs_count = 0;
 
-    bool sign_result     = false;
-    FFIError *sign_error = NULL;
+    bool sign_result          = false;
+    FFIError *sign_file_error = NULL;
 
     target = optget(opts, "sign")->strarg;
     if (NULL == target) {
@@ -1037,10 +1040,10 @@ static int sign(const struct optstruct *opts)
         signing_cert,
         (const char **)intermediate_certs,
         intermediate_certs_count,
-        &sign_error);
+        &sign_file_error);
 
     if (!sign_result) {
-        mprintf(LOGG_ERROR, "sign: Failed to sign file '%s': %s\n", target, ffierror_fmt(sign_error));
+        mprintf(LOGG_ERROR, "sign: Failed to sign file '%s': %s\n", target, ffierror_fmt(sign_file_error));
         goto done;
     }
 
@@ -1055,6 +1058,9 @@ done:
     if (NULL != intermediate_certs) {
         free(intermediate_certs);
     }
+    if (NULL != sign_file_error) {
+        ffierror_free(sign_file_error);
+    }
 
     return ret;
 }
@@ -1065,16 +1071,18 @@ static int verify(const struct optstruct *opts)
     char *target         = NULL;
     char *sign_file_name = NULL;
 
-    char *certsdir = NULL;
+    char *cvdcertsdir = NULL;
+    STATBUF statbuf;
 
-    bool verify_result     = false;
-    FFIError *verify_error = NULL;
+    char *signer_name           = NULL;
+    bool verify_result          = false;
+    FFIError *verify_file_error = NULL;
 
     target = optget(opts, "verify")->strarg;
     if (NULL == target) {
         mprintf(LOGG_ERROR, "verify: No target file specified.\n");
-        mprintf(LOGG_ERROR, "To verify a file signed with sigtool, you must specify a target file. You may also override the default certificates directory using --certsdir.\n");
-        mprintf(LOGG_ERROR, "For example:  sigtool --verify myfile.cvd --certsdir /path/to/certs/\n");
+        mprintf(LOGG_ERROR, "To verify a file signed with sigtool, you must specify a target file. You may also override the default certificates directory using --cvdcertsdir.\n");
+        mprintf(LOGG_ERROR, "For example:  sigtool --verify myfile.cvd --cvdcertsdir /path/to/certs/\n");
         goto done;
     }
 
@@ -1084,29 +1092,49 @@ static int verify(const struct optstruct *opts)
         goto done;
     }
 
-    certsdir = optget(opts, "certsdir")->strarg;
-    if (NULL == certsdir) {
-        certsdir = CERTSDIR;
+    cvdcertsdir = optget(opts, "cvdcertsdir")->strarg;
+    if (NULL == cvdcertsdir) {
+        // Check if the CVD_CERTS_DIR environment variable is set
+        cvdcertsdir = getenv("CVD_CERTS_DIR");
+
+        // If not, use the default value
+        if (NULL == cvdcertsdir) {
+            cvdcertsdir = CERTSDIR;
+        }
+    }
+
+    if (LSTAT(cvdcertsdir, &statbuf) == -1) {
+        logg(LOGG_ERROR,
+             "ClamAV CA certificates directory is missing: %s\n"
+             "It should have been provided as a part of installation.",
+             cvdcertsdir);
+        goto done;
     }
 
     verify_result = codesign_verify_file(
         target,
         sign_file_name,
-        certsdir,
-        &verify_error);
-
+        cvdcertsdir,
+        &signer_name,
+        &verify_file_error);
     if (!verify_result) {
-        mprintf(LOGG_ERROR, "verify: Failed to verify file '%s': %s\n", target, ffierror_fmt(verify_error));
+        mprintf(LOGG_ERROR, "verify: Failed to verify file '%s': %s\n", target, ffierror_fmt(verify_file_error));
         goto done;
     }
 
-    mprintf(LOGG_INFO, "verify: Successfully verified file '%s' with signature '%s'\n", target, sign_file_name);
+    mprintf(LOGG_INFO, "verify: Successfully verified file '%s' with signature '%s', signed by '%s'\n", target, sign_file_name, signer_name);
     ret = 0;
 
 done:
 
+    if (NULL != signer_name) {
+        ffi_cstring_free(signer_name);
+    }
     if (NULL != sign_file_name) {
         free(sign_file_name);
+    }
+    if (NULL != verify_file_error) {
+        ffierror_free(verify_file_error);
     }
 
     return ret;
@@ -1583,8 +1611,8 @@ static int unpack(const struct optstruct *opts)
         name[sizeof(name) - 1] = '\0';
     }
 
-    if (optget(opts, "certsdir")->active)
-        certs_directory = optget(opts, "certsdir")->strarg;
+    if (optget(opts, "cvdcertsdir")->active)
+        certs_directory = optget(opts, "cvdcertsdir")->strarg;
     else
         certs_directory = CERTSDIR;
 
@@ -3989,10 +4017,10 @@ static void help(void)
     mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "  Commands creating and verifying .sign detached digital signatures:\n");
     mprintf(LOGG_INFO, "\n");
-    mprintf(LOGG_INFO, "    --sign /path/to/filename               Sign a file.\n");
+    mprintf(LOGG_INFO, "    --sign FILE                            Sign a file.\n");
     mprintf(LOGG_INFO, "                                           The resulting .sign file name will\n");
-    mprintf(LOGG_INFO, "                                           be in the form: filename-version.cvd.sign\n");
-    mprintf(LOGG_INFO, "                                           or filename.sign for non-CVD targets.\n");
+    mprintf(LOGG_INFO, "                                           be in the form: dbname-version.cvd.sign\n");
+    mprintf(LOGG_INFO, "                                           or FILE.sign for non-CVD targets.\n");
     mprintf(LOGG_INFO, "                                           It will be created next to the target file.\n");
     mprintf(LOGG_INFO, "                                           If a .sign file already exists, then the\n");
     mprintf(LOGG_INFO, "                                           new signature will be appended to file.\n");
@@ -4001,13 +4029,13 @@ static void help(void)
     mprintf(LOGG_INFO, "                                           May be used more than once to add\n");
     mprintf(LOGG_INFO, "                                           intermediate and root certificates.\n");
     mprintf(LOGG_INFO, "\n");
-    mprintf(LOGG_INFO, "    --verify /path/to/filename             Find and verify a detached digital\n");
+    mprintf(LOGG_INFO, "    --verify FILE                          Find and verify a detached digital\n");
     mprintf(LOGG_INFO, "                                           signature for the given file.\n");
     mprintf(LOGG_INFO, "                                           The digital signature file name must\n");
-    mprintf(LOGG_INFO, "                                           be in the form: filename-version.cvd.sign\n");
-    mprintf(LOGG_INFO, "                                           or filename.sign for non-CVD targets.\n");
+    mprintf(LOGG_INFO, "                                           be in the form: dbname-version.cvd.sign\n");
+    mprintf(LOGG_INFO, "                                           or FILE.sign for non-CVD targets.\n");
     mprintf(LOGG_INFO, "                                           It must be found next to the target file.\n");
-    mprintf(LOGG_INFO, "    --certsdir /path/to/certs/             Specify a directory containing the root\n");
+    mprintf(LOGG_INFO, "    --cvdcertsdir DIRECTORY                Specify a directory containing the root\n");
     mprintf(LOGG_INFO, "                                           CA cert needed to verify the signature.\n");
     mprintf(LOGG_INFO, "                                           If not provided, then sigtool will look in:\n");
     mprintf(LOGG_INFO, "                                           " CERTSDIR "\n");

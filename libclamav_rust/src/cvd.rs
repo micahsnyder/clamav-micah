@@ -8,12 +8,14 @@ use std::{
         raw::{c_char, c_void},
     },
     path::{Path, PathBuf},
+    str::FromStr,
     time::{Duration, SystemTime},
 };
 
 use flate2::read::GzDecoder;
 use hex;
 use log::{debug, error, warn};
+use tar::Archive;
 
 use crate::{
     codesign, ffi_error, ffi_error_null, ffi_util::FFIError, sys, validate_optional_str_param,
@@ -52,6 +54,7 @@ pub struct CVD {
     pub builder: String,
     pub file: File,
     pub path: PathBuf,
+    pub is_compressed: bool,
 }
 
 impl CVD {
@@ -65,6 +68,7 @@ impl CVD {
         md5: Option<String>,
         builder: String,
         path: PathBuf,
+        is_compressed: bool,
     ) -> Self {
         let file = File::open(&path).unwrap();
         Self {
@@ -78,6 +82,7 @@ impl CVD {
             builder,
             file,
             path,
+            is_compressed,
         }
     }
 
@@ -107,10 +112,23 @@ impl CVD {
             .to_string();
 
         // read the 512 byte header
-        let mut header = [0; 512];
+        let mut header: [u8; 512]  = [0; 512];
         reader
             .read_exact(&mut header)
             .map_err(|_| Error::Parse("File is smaller than 512-byte CVD header".to_string()))?;
+
+        let mut maybe_copying: [u8; 7] = [0; 7];
+        reader
+            .read_exact(&mut maybe_copying)
+            .map_err(|_| Error::Parse("Can't read first 7 bytes of the tar file following the header.".to_string()))?;
+
+        let is_compressed = if &maybe_copying == b"COPYING" {
+            // Able to read the contents of the first file, which must be COPYING.
+            // This means the CVD is not compressed.
+            false
+        } else {
+            true
+        };
 
         let mut fields = header.split(|&n| n == b':');
 
@@ -231,6 +249,7 @@ impl CVD {
             builder,
             file,
             path: file_path.to_path_buf(),
+            is_compressed,
         })
     }
 
@@ -250,7 +269,11 @@ impl CVD {
 
         debug!("Read {} bytes from CVD file", bytes_read);
 
-        let mut archive = tar::Archive::new(GzDecoder::new(file_bytes.as_slice()));
+        let mut archive: Archive<Box<dyn Read>> = if self.is_compressed {
+            tar::Archive::new(Box::new(GzDecoder::new(file_bytes.as_slice())))
+        } else {
+            tar::Archive::new(Box::new(BufReader::new(file_bytes.as_slice())))
+        };
 
         archive
             .entries()
@@ -260,8 +283,18 @@ impl CVD {
                     e.to_string()
                 ))
             })?
-            .filter_map(|e| e.ok())
-            .for_each(|mut entry| -> () {
+            // .filter_map(|e| e.ok())
+            .for_each(|entry| -> () {
+                let mut entry = match entry {
+                    Ok(entry) => {
+                        entry
+                    }
+                    Err(e) => {
+                        error!("Failed to get entry in signature archive: {}", e);
+                        return;
+                    }
+                };
+
                 let file_path = match entry.path() {
                     Ok(file_path) => file_path,
                     Err(e) => {
@@ -360,7 +393,7 @@ impl CVD {
         Ok(())
     }
 
-    pub fn verify_external_sign_file(&mut self, certs_directory: &Path) -> Result<(), Error> {
+    pub fn verify_external_sign_file(&mut self, certs_directory: &Path) -> Result<String, Error> {
         let database_directory = self.path.parent().ok_or_else(|| {
             Error::Parse("Failed to get database directory from CVD file path".to_string())
         })?;
@@ -384,9 +417,9 @@ impl CVD {
         let signature_file_path = database_directory.join(signature_file_name);
 
         match codesign::verify_signed_file(&self.path, &signature_file_path, certs_directory) {
-            Ok(()) => {
-                debug!("Detached CVD signature verification succeeded");
-                return Ok(());
+            Ok(signer) => {
+                debug!("Successfully verified {:?} signed by {}", self.path, signer);
+                return Ok(signer);
             }
             Err(codesign::Error::InvalidDigitalSignature(m)) => {
                 warn!(
@@ -409,14 +442,14 @@ impl CVD {
         &mut self,
         certs_directory: Option<PathBuf>,
         disable_md5: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<String, Error> {
         // First try to verify the CVD with the detached signature file.
         // If that fails, fall back to verifying with the MD5-based attached RSA digital signature.
         if let Some(certs_directory) = certs_directory {
             match self.verify_external_sign_file(&certs_directory) {
-                Ok(()) => {
+                Ok(signer) => {
                     debug!("CVD verified successfully with detached signature file");
-                    return Ok(());
+                    return Ok(signer);
                 }
                 Err(Error::InvalidDigitalSignature(e)) => {
                     warn!("Detached CVD signature is invalid: {}", e);
@@ -427,6 +460,8 @@ impl CVD {
                         "Failed to verify {:?} with detached signature file: {}",
                         self.path, e
                     );
+
+                    // If the error because of an invalid signature, fall back to verifying with the MD5-based attached RSA digital signature
                 }
             }
         } else {
@@ -439,7 +474,19 @@ impl CVD {
         }
 
         // Fall back to verifying with the MD5-based attached RSA digital signature
-        self.verify_rsa_dsig()
+        match self.verify_rsa_dsig() {
+            Ok(()) => {
+                debug!("CVD verified successfully with Talos MD5-based RSA digital signature");
+                Ok("Talos".to_string())
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to verify CVD with MD5-based RSA digital signature: {}",
+                    e
+                );
+                Err(e)
+            }
+        }
     }
 }
 
@@ -455,6 +502,7 @@ pub unsafe extern "C" fn cvd_check(
     certs_directory_str: *const c_char,
     skip_sign_verify: bool,
     disable_md5: bool,
+    signer_name: *mut *mut c_char,
     err: *mut *mut FFIError,
 ) -> bool {
     let cvd_file_path_str = validate_str_param!(cvd_file_path_str);
@@ -469,7 +517,7 @@ pub unsafe extern "C" fn cvd_check(
     };
 
     let certs_directory_str = validate_str_param!(certs_directory_str);
-    let certs_directory = match Path::new(certs_directory_str).canonicalize() {
+    let certs_directory = match PathBuf::from_str(certs_directory_str) {
         Ok(p) => p,
         Err(e) => {
             return ffi_error!(
@@ -487,8 +535,9 @@ pub unsafe extern "C" fn cvd_check(
             }
 
             match cvd.verify(Some(certs_directory), disable_md5) {
-                Ok(()) => {
-                    println!("CVD verified successfully");
+                Ok(signer) => {
+                    let signer_cstr = std::ffi::CString::new(signer).unwrap();
+                    *signer_name = signer_cstr.into_raw();
                     return true;
                 }
                 Err(e) => {
@@ -593,18 +642,22 @@ pub unsafe extern "C" fn cvd_verify(
     cvd: *const c_void,
     certs_directory_str: *const c_char,
     disable_md5: bool,
+    signer_name: *mut *mut c_char,
     err: *mut *mut FFIError,
 ) -> bool {
     let mut cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
 
     let certs_directory_str = validate_optional_str_param!(certs_directory_str);
     let certs_directory = match certs_directory_str {
-        Some(c) => match Path::new(c).canonicalize() {
+        Some(c) => match PathBuf::from_str(c) {
             Ok(p) => Some(p),
             Err(e) => {
                 return ffi_error!(
                     err = err,
-                    Error::CannotVerify(format!("Invalid certs directory path: {}", e))
+                    Error::CannotVerify(format!(
+                        "Invalid certs directory path {:?}: {}",
+                        certs_directory_str, e
+                    ))
                 );
             }
         },
@@ -612,13 +665,13 @@ pub unsafe extern "C" fn cvd_verify(
     };
 
     match cvd.verify(certs_directory, disable_md5) {
-        Ok(()) => {
-            debug!("CVD verified successfully");
+        Ok(signer) => {
+            let signer_cstr = std::ffi::CString::new(signer).unwrap();
+            *signer_name = signer_cstr.into_raw();
             true
         }
         Err(e) => {
-            ffi_error!(err = err, e);
-            false
+            return ffi_error!(err = err, e);
         }
     }
 }
@@ -725,7 +778,7 @@ pub unsafe extern "C" fn cvd_get_min_flevel(cvd: *const c_void) -> u32 {
 /// No parameters may be NULL
 /// The CVD pointer must be valid
 #[export_name = "cvd_get_builder"]
-pub unsafe extern "C" fn cvd_get_builder(cvd: *const c_void) -> *const c_char {
+pub unsafe extern "C" fn cvd_get_builder(cvd: *const c_void) -> *mut c_char {
     let cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
     CString::new(cvd.builder.clone()).unwrap().into_raw()
 }

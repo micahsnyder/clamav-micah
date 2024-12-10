@@ -1051,6 +1051,9 @@ int scanmanager(const struct optstruct *opts)
     struct engine_free_progress engine_free_progress_ctx = {0};
 #endif
 
+    char *cvdcertsdir = NULL;
+    STATBUF statbuf;
+
     /* Initialize scan options struct */
     memset(&options, 0, sizeof(struct cl_scan_options));
 
@@ -1249,20 +1252,32 @@ int scanmanager(const struct optstruct *opts)
         }
     }
 
-    if ((opt = optget(opts, "certsdir"))->enabled) {
-        if ((ret = cl_engine_set_str(engine, CL_ENGINE_CERTSDIR, opt->strarg))) {
-            logg(LOGG_ERROR, "cli_engine_set_str(CL_ENGINE_CERTSDIR) failed: %s\n", cl_strerror(ret));
+    cvdcertsdir = optget(opts, "cvdcertsdir")->strarg;
+    if (NULL == cvdcertsdir) {
+        // Check if the CVD_CERTS_DIR environment variable is set
+        cvdcertsdir = getenv("CVD_CERTS_DIR");
 
-            ret = 2;
-            goto done;
+        // If not, use the default value
+        if (NULL == cvdcertsdir) {
+            cvdcertsdir = CERTSDIR;
         }
-    } else {
-        if ((ret = cl_engine_set_str(engine, CL_ENGINE_CERTSDIR, CERTSDIR))) {
-            logg(LOGG_ERROR, "cli_engine_set_str(CL_ENGINE_CERTSDIR) failed: %s\n", cl_strerror(ret));
+    }
 
-            ret = 2;
-            goto done;
-        }
+    if (LSTAT(cvdcertsdir, &statbuf) == -1) {
+        logg(LOGG_ERROR,
+             "ClamAV CA certificates directory is missing: %s\n"
+             "It should have been provided as a part of installation.",
+             cvdcertsdir);
+
+        ret = 2;
+        goto done;
+    }
+
+    if ((ret = cl_engine_set_str(engine, CL_ENGINE_CERTSDIR, cvdcertsdir))) {
+        logg(LOGG_ERROR, "cli_engine_set_str(CL_ENGINE_CERTSDIR) failed: %s\n", cl_strerror(ret));
+
+        ret = 2;
+        goto done;
     }
 
     if ((opt = optget(opts, "database"))->active) {

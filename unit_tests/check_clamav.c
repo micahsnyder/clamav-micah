@@ -451,7 +451,7 @@ START_TEST(test_cl_cvdverify)
     // Can't verify a cvd that doesn't exist
     testfile = SRCDIR "/input/freshclam_testfiles/test-na.cvd";
     ret      = cl_cvdverify(testfile);
-    ck_assert_msg(CL_EOPEN == ret, "cl_cvdverify should have failed for: %s -- %s", testfile, cl_strerror(ret));
+    ck_assert_msg(CL_ECVD == ret, "cl_cvdverify should have failed for: %s -- %s", testfile, cl_strerror(ret));
 
     // A cdiff is not a cvd. Cannot verify with cl_cvdverify!
     testfile = SRCDIR "/input/freshclam_testfiles/test-2.cdiff";
