@@ -495,9 +495,11 @@ impl Verifier {
                         let signer = cert
                             .subject_name()
                             .entries()
-                            .next()
+                            .find(|name_entry| {
+                                name_entry.object().nid() == openssl::nid::Nid::COMMONNAME
+                            })
                             .ok_or(Error::InvalidDigitalSignature(
-                                "Certificate does not have any name entries".to_string(),
+                                "Certificate in the signature's cert stack does not have a Common Name entry".to_string(),
                             ))?
                             .data()
                             .as_utf8()?
