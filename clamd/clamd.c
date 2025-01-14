@@ -172,7 +172,7 @@ int main(int argc, char **argv)
     pid_t mainpid         = 0;
     mode_t old_umask      = 0;
     const char *user_name = NULL;
-    char *cvdcertsdir        = NULL;
+    char *cvdcertsdir     = NULL;
     STATBUF statbuf;
 
     if (check_flevel())
@@ -597,9 +597,9 @@ int main(int argc, char **argv)
             // (which would've used the env var or hardcoded path)
             if (LSTAT(cvdcertsdir, &statbuf) == -1) {
                 logg(LOGG_ERROR,
-                    "ClamAV CA certificates directory is missing: %s\n"
-                    "It should have been provided as a part of installation.",
-                    cvdcertsdir);
+                     "ClamAV CA certificates directory is missing: %s\n"
+                     "It should have been provided as a part of installation.",
+                     cvdcertsdir);
                 ret = 1;
                 break;
             }

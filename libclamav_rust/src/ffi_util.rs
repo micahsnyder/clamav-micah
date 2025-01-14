@@ -26,7 +26,7 @@ use std::{
     os::raw::c_char,
 };
 
-use log::{warn};
+use log::warn;
 
 /// Wraps a call to a "result-returning function", allowing it to specify an
 /// error receiver and (optionally) result receiver.
@@ -426,7 +426,7 @@ macro_rules! validate_str_param_null {
 ///
 /// The CString pointer must be valid
 /// The CString pointer must not be used after calling this function
-#[export_name =  "ffi_cstring_free"]
+#[export_name = "ffi_cstring_free"]
 pub unsafe extern "C" fn ffi_cstring_free(cstring: *mut c_char) {
     if cstring.is_null() {
         warn!("Attempted to free a NULL CString pointer. Please report this at:: https://github.com/Cisco-Talos/clamav/issues");

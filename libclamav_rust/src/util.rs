@@ -145,10 +145,7 @@ pub unsafe fn scan_archive_metadata(
 ///
 /// No parameters may be NULL.
 #[export_name = "glob_rm"]
-pub unsafe extern "C" fn glob_rm(
-    glob_str: *const c_char,
-    err: *mut *mut FFIError,
-) -> bool {
+pub unsafe extern "C" fn glob_rm(glob_str: *const c_char, err: *mut *mut FFIError) -> bool {
     let glob_str = validate_str_param!(glob_str);
 
     for entry in glob(glob_str).expect("Failed to read glob pattern") {
