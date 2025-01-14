@@ -321,7 +321,7 @@ struct cl_engine {
     uint32_t ac_mindepth;
     uint32_t ac_maxdepth;
     char *tmpdir;
-    char* certs_directory;
+    char *certs_directory;
     uint32_t keeptmp;
     uint64_t engine_options;
     uint32_t cache_size;

@@ -685,23 +685,31 @@ cl_error_t cl_cvdunpack_ex(const char *file, const char *dir, bool dont_verify, 
         return CL_EOPEN;
     }
 
-    if (!dont_verify) {
-        if (!codesign_verifier_new(certs_directory, &verifier, &new_verifier_error)) {
-            cli_errmsg("Failed to create a new code-signature verifier: %s\n", ffierror_fmt(new_verifier_error));
+    if (dont_verify) {
+        // Just unpack the CVD file.
+        if (!cvd_unpack(cvd, dir, &cvd_unpack_error)) {
+            cli_errmsg("CVD unpacking failed: %s\n", ffierror_fmt(cvd_unpack_error));
             status = CL_EUNPACK;
             goto done;
+        }
+    } else {
+        // Verify the CVD file and hten unpack it.
+
+        // The certs directory is optional.
+        // If not provided, then we can't validate external signatures and will have to rely
+        // on the internal MD5-based RSA signature.
+        if (NULL != certs_directory) {
+            if (!codesign_verifier_new(certs_directory, &verifier, &new_verifier_error)) {
+                cli_errmsg("Failed to create a new code-signature verifier: %s\n", ffierror_fmt(new_verifier_error));
+                status = CL_EUNPACK;
+                goto done;
+            }
         }
 
         status = cli_cvdunpack_and_verify(file, dir, dont_verify, verifier);
         if (status != CL_SUCCESS) {
             goto done;
         }
-    }
-
-    if (!cvd_unpack(cvd, dir, &cvd_unpack_error)) {
-        cli_errmsg("CVD unpacking failed: %s\n", ffierror_fmt(cvd_unpack_error));
-        status = CL_EUNPACK;
-        goto done;
     }
 
 done:

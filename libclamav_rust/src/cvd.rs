@@ -23,14 +23,17 @@ use std::{
     fs::File,
     io::{prelude::*, BufReader},
     mem::ManuallyDrop,
-    os::{
-        fd::AsRawFd,
-        raw::{c_char, c_void},
-    },
+    os::raw::{c_char, c_void},
     path::{Path, PathBuf},
     str::FromStr,
     time::{Duration, SystemTime},
 };
+
+#[cfg(any(unix))]
+use std::os::fd::AsRawFd;
+
+#[cfg(any(windows))]
+use std::os::windows::io::{AsRawHandle, RawHandle};
 
 use crate::codesign::Verifier;
 use flate2::read::GzDecoder;
@@ -647,16 +650,29 @@ pub unsafe extern "C" fn cvd_verify(
 ) -> bool {
     let mut cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
 
-    let verifier = ManuallyDrop::new(Box::from_raw(verifier_ptr as *mut Verifier));
-
-    match cvd.verify(Some(&verifier), disable_md5) {
-        Ok(signer) => {
-            let signer_cstr = std::ffi::CString::new(signer).unwrap();
-            *signer_name = signer_cstr.into_raw();
-            true
+    if verifier_ptr.is_null() {
+        match cvd.verify(None, disable_md5) {
+            Ok(signer) => {
+                let signer_cstr = std::ffi::CString::new(signer).unwrap();
+                *signer_name = signer_cstr.into_raw();
+                true
+            }
+            Err(e) => {
+                ffi_error!(err = err, e)
+            }
         }
-        Err(e) => {
-            ffi_error!(err = err, e)
+    } else {
+        let verifier = ManuallyDrop::new(Box::from_raw(verifier_ptr as *mut Verifier));
+
+        match cvd.verify(Some(&verifier), disable_md5) {
+            Ok(signer) => {
+                let signer_cstr = std::ffi::CString::new(signer).unwrap();
+                *signer_name = signer_cstr.into_raw();
+                true
+            }
+            Err(e) => {
+                ffi_error!(err = err, e)
+            }
         }
     }
 }
@@ -778,8 +794,29 @@ pub unsafe extern "C" fn cvd_get_builder(cvd: *const c_void) -> *mut c_char {
 ///
 /// No parameters may be NULL
 /// The CVD pointer must be valid
+#[cfg(any(unix))]
 #[export_name = "cvd_get_file"]
 pub unsafe extern "C" fn cvd_get_file(cvd: *const c_void) -> i32 {
     let cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
+
     cvd.file.as_raw_fd()
+}
+
+/// C interface for getting the file handle of a CVD.
+/// Handles all the unsafe ffi stuff.
+/// Returns the file handle an integer.
+/// The caller must not close the file handle.
+/// The file handle is not guaranteed to be valid after the CVD struct is freed.
+///
+/// # Safety
+///
+/// No parameters may be NULL
+/// The CVD pointer must be valid
+#[cfg(any(windows))]
+#[export_name = "cvd_get_file"]
+pub unsafe extern "C" fn cvd_get_file(cvd: *const c_void) -> i32 {
+    let cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
+
+    let file = cvd.file.as_raw_handle();
+    file.to_fd()
 }

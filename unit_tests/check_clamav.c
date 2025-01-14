@@ -416,7 +416,7 @@ START_TEST(test_cl_load)
     struct cl_engine *engine;
     unsigned int sigs = 0;
     const char *testfile;
-    const char* cvdcertsdir;
+    const char *cvdcertsdir;
 
     ret = cl_init(CL_INIT_DEFAULT);
     ck_assert_msg(ret == CL_SUCCESS, "cl_init failed: %s", cl_strerror(ret));
@@ -443,7 +443,7 @@ START_TEST(test_cl_cvdverify)
     FILE *orig_fs;
     FILE *new_fs;
     char cvd_bytes[5000];
-    const char* cvdcertsdir;
+    const char *cvdcertsdir;
 
     cvdcertsdir = getenv("CVD_CERTS_DIR");
     ck_assert_msg(cvdcertsdir != NULL, "CVD_CERTS_DIR not set");
