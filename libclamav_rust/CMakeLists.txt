@@ -4,9 +4,10 @@
 # Copyright (C) 2021-2024 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
 #
 
-# if OPENSSL_ROOT_DIR is set, pass it to the environment
-if(OPENSSL_ROOT_DIR)
-    set(ENVIRONMENT "OPENSSL_DIR=${OPENSSL_ROOT_DIR}")
+# if OPENSSL_INCLUDE_DIR is set, use it to determine the OPENSSL_DIR
+if(OPENSSL_INCLUDE_DIR)
+    get_filename_component(OPENSSL_DIR ${OPENSSL_INCLUDE_DIR} DIRECTORY)
+    set(ENVIRONMENT "OPENSSL_DIR=${OPENSSL_DIR}")
 else ()
     set(ENVIRONMENT "")
 endif()
