@@ -35,7 +35,12 @@ endforeach()
 set(ENVIRONMENT "")
 list(APPEND ENVIRONMENT "OPENSSL_DIR=${OPENSSL_DIR}")
 list(APPEND ENVIRONMENT "OPENSSL_INCLUDE_DIR=${OPENSSL_INCLUDE_DIR}")
-list(APPEND ENVIRONMENT "OPENSSL_LIBS=${OPENSSL_LIBS}")
+if(NOT MSVC)
+    # Setting OPENSSL_LIBS caused failures in testing for Windows.
+    # It's possible they require a different format or the .lib or .dll extensions.
+    # For now, we'll only set this for non-Windows builds.
+    list(APPEND ENVIRONMENT "OPENSSL_LIBS=${OPENSSL_LIBS}")
+endif()
 list(APPEND ENVIRONMENT "OPENSSL_LIB_DIR=${OPENSSL_LIB_DIR}")
 
 # libclamav rust static library
