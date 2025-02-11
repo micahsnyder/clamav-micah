@@ -72,35 +72,41 @@
 #define FLAG_REG_CASE 8 /* case-sensitive regex matching */
 
 #ifdef _WIN32
-static bool is_initialized = false;
 
-#ifndef BACKUP_DATADIR
-#define BACKUP_DATADIR "C:\\ClamAV\\database"
-#endif
-#ifndef BACKUP_CONFDIR
-#define BACKUP_CONFDIR "C:\\ClamAV"
-#endif
-char _DATADIR[MAX_PATH]           = BACKUP_DATADIR;
-char _CONFDIR[MAX_PATH]           = BACKUP_CONFDIR;
-char _CONFDIR_CLAMD[MAX_PATH]     = BACKUP_CONFDIR "\\clamd.conf";
-char _CONFDIR_FRESHCLAM[MAX_PATH] = BACKUP_CONFDIR "\\freshclam.conf";
-char _CONFDIR_MILTER[MAX_PATH]    = BACKUP_CONFDIR "\\clamav-milter.conf";
+    static bool is_initialized = false;
 
-#define CONST_DATADIR _DATADIR
-#define CONST_CONFDIR _CONFDIR
-#define CONST_CERTSDIR _CERTSDIR
-#define CONST_CONFDIR_CLAMD _CONFDIR_CLAMD
-#define CONST_CONFDIR_FRESHCLAM _CONFDIR_FRESHCLAM
-#define CONST_CONFDIR_MILTER _CONFDIR_MILTER
+    #ifndef BACKUP_DATADIR
+    #define BACKUP_DATADIR "C:\\ClamAV\\database"
+    #endif
+    #ifndef BACKUP_CONFDIR
+    #define BACKUP_CONFDIR "C:\\ClamAV"
+    #endif
+    #ifndef BACKUP_CERTSDIR
+    #define BACKUP_CERTSDIR "C:\\ClamAV\\certs"
+    #endif
+
+    char _DATADIR[MAX_PATH]           = BACKUP_DATADIR;
+    char _CONFDIR[MAX_PATH]           = BACKUP_CONFDIR;
+    char _CERTSDIR[MAX_PATH]          = BACKUP_CERTSDIR;
+    char _CONFDIR_CLAMD[MAX_PATH]     = BACKUP_CONFDIR "\\clamd.conf";
+    char _CONFDIR_FRESHCLAM[MAX_PATH] = BACKUP_CONFDIR "\\freshclam.conf";
+    char _CONFDIR_MILTER[MAX_PATH]    = BACKUP_CONFDIR "\\clamav-milter.conf";
+
+    #define CONST_DATADIR           _DATADIR
+    #define CONST_CONFDIR           _CONFDIR
+    #define CONST_CERTSDIR          _CERTSDIR
+    #define CONST_CONFDIR_CLAMD     _CONFDIR_CLAMD
+    #define CONST_CONFDIR_FRESHCLAM _CONFDIR_FRESHCLAM
+    #define CONST_CONFDIR_MILTER    _CONFDIR_MILTER
 
 #else
 
-#define CONST_DATADIR DATADIR
-#define CONST_CONFDIR CONFDIR
-#define CONST_CERTSDIR CERTSDIR
-#define CONST_CONFDIR_CLAMD CONFDIR_CLAMD
-#define CONST_CONFDIR_FRESHCLAM CONFDIR_FRESHCLAM
-#define CONST_CONFDIR_MILTER CONFDIR_MILTER
+    #define CONST_DATADIR           DATADIR
+    #define CONST_CONFDIR           CONFDIR
+    #define CONST_CERTSDIR          CERTSDIR
+    #define CONST_CONFDIR_CLAMD     CONFDIR_CLAMD
+    #define CONST_CONFDIR_FRESHCLAM CONFDIR_FRESHCLAM
+    #define CONST_CONFDIR_MILTER    CONFDIR_MILTER
 
 #endif
 
@@ -680,9 +686,23 @@ const struct clam_option __clam_options[] = {
 const struct clam_option *clam_options = __clam_options;
 
 #ifdef _WIN32
-void fix_paths(void)
+/**
+ * @brief For Windows, we support getting the database and configuration directories
+ * from the registry or based on the executable path.
+ *
+ * This function will set the global variables _DATADIR, _CONFDIR, and _CERTSDIR, pointed
+ * to by the macros CONST_DATADIR, CONST_CONFDIR, and CONST_CERTSDIR, respectively.
+ *
+ * Outside of this source file, you can get them with `optget()`, a la:
+ * ```c
+ *     const char *localdbdir = optget(opts, "datadir")->strarg;
+ * ```
+ */
+static void fix_paths(void)
 {
-    int have_ddir = 0, have_cdir = 0;
+    bool have_db_dir    = false;
+    bool have_conf_dir  = false;
+    bool have_certs_dir = false;
     char path[MAX_PATH] = "";
     DWORD sizof;
     HKEY key;
@@ -690,30 +710,42 @@ void fix_paths(void)
     if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, CLAMKEY, 0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS || RegOpenKeyEx(HKEY_CURRENT_USER, CLAMKEY, 0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
         sizof = sizeof(path);
         if (RegQueryValueEx(key, "DataDir", 0, NULL, path, &sizof) == ERROR_SUCCESS) {
-            have_ddir = 1;
-            memcpy(_DATADIR, path, sizof);
+            have_db_dir = true;
+            memcpy(_DATADIR, path, MIN(sizof, sizeof(_DATADIR) - 1));
         }
         sizof = sizeof(path);
         if (RegQueryValueEx(key, "ConfDir", 0, NULL, path, &sizof) == ERROR_SUCCESS) {
-            have_cdir = 1;
-            memcpy(_CONFDIR, path, sizof);
+            have_conf_dir = true;
+            memcpy(_CONFDIR, path, MIN(sizof, sizeof(_CONFDIR) - 1));
+        }
+        sizof = sizeof(path);
+        if (RegQueryValueEx(key, "CvdCertsDir", 0, NULL, path, &sizof) == ERROR_SUCCESS) {
+            have_certs_dir = true;
+            memcpy(_CERTSDIR, path, MIN(sizof, sizeof(_CERTSDIR) - 1));
         }
         RegCloseKey(key);
     }
-    if (!(have_ddir | have_cdir) && GetModuleFileName(NULL, path, sizeof(path))) {
+
+    if (!(have_db_dir | have_conf_dir | have_certs_dir) && GetModuleFileName(NULL, path, sizeof(path))) {
         char *dir;
         path[sizeof(path) - 1] = '\0';
         dir                    = dirname(path);
-        if (!have_ddir)
+        if (!have_db_dir) {
             snprintf(_DATADIR, sizeof(_DATADIR), "%s\\database", dir);
-        if (!have_cdir) {
+        }
+        if (!have_conf_dir) {
             strncpy(_CONFDIR, dir, sizeof(_CONFDIR));
-            have_cdir = 1;
+            have_conf_dir = true;
+        }
+        if (!have_certs_dir) {
+            strncpy(_CERTSDIR, dir, sizeof(_CERTSDIR));
         }
     }
+
     _DATADIR[sizeof(_DATADIR) - 1] = '\0';
     _CONFDIR[sizeof(_CONFDIR) - 1] = '\0';
-    if (have_cdir) {
+
+    if (have_conf_dir) {
         snprintf(_CONFDIR_CLAMD, sizeof(_CONFDIR_CLAMD), "%s\\%s", _CONFDIR, "clamd.conf");
         snprintf(_CONFDIR_FRESHCLAM, sizeof(_CONFDIR_FRESHCLAM), "%s\\%s", _CONFDIR, "freshclam.conf");
         snprintf(_CONFDIR_MILTER, sizeof(_CONFDIR_MILTER), "%s\\%s", _CONFDIR, "clamav-milter.conf");
@@ -1022,8 +1054,7 @@ struct optstruct *optparse(const char *cfgfile, int argc, char **argv, int verbo
                 break;
 
             buff = buffer;
-            for (i = 0; i < (int)strlen(buff) - 1 && (buff[i] == ' ' || buff[i] == '\t'); i++)
-                ;
+            for (i = 0; i < (int)strlen(buff) - 1 && (buff[i] == ' ' || buff[i] == '\t'); i++);
             buff += i;
             line++;
             if (strlen(buff) <= 2 || buff[0] == '#')
@@ -1044,11 +1075,9 @@ struct optstruct *optparse(const char *cfgfile, int argc, char **argv, int verbo
             }
             name  = buff;
             *pt++ = 0;
-            for (i = 0; i < (int)strlen(pt) - 1 && (pt[i] == ' ' || pt[i] == '\t'); i++)
-                ;
+            for (i = 0; i < (int)strlen(pt) - 1 && (pt[i] == ' ' || pt[i] == '\t'); i++);
             pt += i;
-            for (i = strlen(pt); i >= 1 && (pt[i - 1] == ' ' || pt[i - 1] == '\t' || pt[i - 1] == '\n'); i--)
-                ;
+            for (i = strlen(pt); i >= 1 && (pt[i - 1] == ' ' || pt[i - 1] == '\t' || pt[i - 1] == '\n'); i--);
             if (!i) {
                 if (verbose)
                     fprintf(stderr, "ERROR: Missing argument for option at %s:%d\n", cfgfile, line);

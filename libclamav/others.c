@@ -605,7 +605,13 @@ struct cl_engine *cl_engine_new(void)
     if (NULL != cvdcertsdir) {
         new->certs_directory = CLI_MPOOL_STRDUP(new->mempool, cvdcertsdir);
     } else {
+#ifdef _WIN32
+        // On Windows, CERTSDIR is NOT defined in clamav-config.h.
+        // We'll leave it uninitialized and then it must be initialized later by the application.
+        new->certs_directory = NULL;
+#else
         new->certs_directory = CLI_MPOOL_STRDUP(new->mempool, CERTSDIR);
+#endif
     }
 
     cli_dbgmsg("Initialized %s engine\n", cl_retver());
