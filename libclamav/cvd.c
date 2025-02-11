@@ -85,10 +85,31 @@ static int cli_tgzload(cvd_t *cvd, struct cl_engine *engine, unsigned int *signo
     struct cli_dbinfo *db;
     char hash[32];
     int fd = -1;
+#ifdef _WIN32
+    HANDLE hFile;
+#endif
 
     cli_dbgmsg("in cli_tgzload()\n");
 
-    fd = cvd_get_file(cvd);
+#ifdef _WIN32
+    // For windows, first get the file handle from the cvd_t object
+    hFile = cvd_get_file_handle(cvd);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return CL_EOPEN;
+    }
+
+    // Then get the file descriptor from the file handle
+    fd = _open_osfhandle((intptr_t)hFile, _O_RDONLY);
+    if (fd == -1) {
+        return CL_EOPEN;
+    }
+#else
+    // For non-windows, get the file descriptor directly from the cvd_t object
+    fd = cvd_get_file_descriptor(cvd);
+    if (fd == -1) {
+        return CL_EOPEN;
+    }
+#endif
 
     if (lseek(fd, 512, SEEK_SET) < 0) {
         return CL_ESEEK;

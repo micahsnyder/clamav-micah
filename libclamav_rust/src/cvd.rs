@@ -33,7 +33,7 @@ use std::{
 use std::os::fd::AsRawFd;
 
 #[cfg(any(windows))]
-use std::os::windows::io::{AsRawHandle, RawHandle};
+use std::os::windows::io::AsRawHandle;
 
 use crate::codesign::Verifier;
 use flate2::read::GzDecoder;
@@ -795,8 +795,8 @@ pub unsafe extern "C" fn cvd_get_builder(cvd: *const c_void) -> *mut c_char {
 /// No parameters may be NULL
 /// The CVD pointer must be valid
 #[cfg(any(unix))]
-#[export_name = "cvd_get_file"]
-pub unsafe extern "C" fn cvd_get_file(cvd: *const c_void) -> i32 {
+#[export_name = "cvd_get_file_descriptor"]
+pub unsafe extern "C" fn cvd_get_file_descriptor(cvd: *const c_void) -> i32 {
     let cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
 
     cvd.file.as_raw_fd()
@@ -813,10 +813,9 @@ pub unsafe extern "C" fn cvd_get_file(cvd: *const c_void) -> i32 {
 /// No parameters may be NULL
 /// The CVD pointer must be valid
 #[cfg(any(windows))]
-#[export_name = "cvd_get_file"]
-pub unsafe extern "C" fn cvd_get_file(cvd: *const c_void) -> i32 {
+#[export_name = "cvd_get_file_handle"]
+pub unsafe extern "C" fn cvd_get_file_handle(cvd: *const c_void) -> *mut c_void {
     let cvd = ManuallyDrop::new(Box::from_raw(cvd as *mut CVD));
 
-    let file = cvd.file.as_raw_handle();
-    file.to_fd()
+    cvd.file.as_raw_handle()
 }

@@ -1088,7 +1088,7 @@ fn cmd_close(ctx: &mut Context) -> Result<(), InputError> {
         #[cfg(windows)]
         if let Err(e) = fs::remove_file(&open_db) {
             // Try to remove the tempfile, since we failed to remove the original
-            fs::remove_file(tmpfile_path).map_err(|e| {
+            fs::remove_file(&tmpfile_path).map_err(|e| {
                 InputError::ProcessingString(format!(
                     "Failed to remove the temp file file {:?} for CLOSE command: {}",
                     tmpfile_path, e
