@@ -1099,7 +1099,7 @@ static int verify(const struct optstruct *opts)
 
         // If not, use the default value
         if (NULL == cvdcertsdir) {
-            cvdcertsdir = CERTSDIR;
+            cvdcertsdir = OPT_CERTSDIR;
         }
     }
 
@@ -1635,7 +1635,7 @@ static int unpack(const struct optstruct *opts)
 
         // If not, use the default value
         if (NULL == certs_directory) {
-            certs_directory = CERTSDIR;
+            certs_directory = OPT_CERTSDIR;
         }
     }
 
@@ -1976,7 +1976,7 @@ static int listsigs(const struct optstruct *opts, int mode)
 
         mprintf_stdout = 1;
         if (S_ISDIR(sb.st_mode)) {
-            if (!strcmp(name, DATADIR)) {
+            if (!strcmp(name, OPT_DATADIR)) {
                 dbdir = freshdbdir();
                 ret   = listdir(opts, localdbdir ? localdbdir : dbdir, NULL);
                 free(dbdir);
@@ -2287,7 +2287,7 @@ static int rundiff(const struct optstruct *opts)
 
         // If not, use the default value
         if (NULL == cvdcertsdir) {
-            cvdcertsdir = CERTSDIR;
+            cvdcertsdir = OPT_CERTSDIR;
         }
     }
 
@@ -4100,8 +4100,17 @@ static void help(void)
     mprintf(LOGG_INFO, "                                           It must be found next to the target file.\n");
     mprintf(LOGG_INFO, "    --cvdcertsdir DIRECTORY                Specify a directory containing the root\n");
     mprintf(LOGG_INFO, "                                           CA cert needed to verify the signature.\n");
-    mprintf(LOGG_INFO, "                                           If not provided, then sigtool will look in:\n");
-    mprintf(LOGG_INFO, "                                           " CERTSDIR "\n");
+    mprintf(LOGG_INFO, "                                           If not provided, then sigtool will look in the default directory.n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "Environment Variables:\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    SIGNDUSER                              The username to authenticate with the signing server when building a\n");
+    mprintf(LOGG_INFO, "                                           signed CVD database.\n");
+    mprintf(LOGG_INFO, "    SIGNDPASS                              The password to authenticate with the signing server when building a\n");
+    mprintf(LOGG_INFO, "                                           signed CVD database.\n");
+    mprintf(LOGG_INFO, "    CVD_CERTS_DIR                          Specify a directory containing the root CA cert needed\n");
+    mprintf(LOGG_INFO, "                                           to verify detached CVD digital signatures.\n");
+    mprintf(LOGG_INFO, "                                           If not provided, then sigtool will look in the default directory.\n");
     mprintf(LOGG_INFO, "\n");
 
     return;

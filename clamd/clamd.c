@@ -111,8 +111,7 @@ static void help(void)
     printf("    --pid=FILE               -p FILE        Write the daemon's pid to FILE\n");
     printf("    --cvdcertsdir=DIRECTORY                 Specify a directory containing the root\n");
     printf("                                            CA cert needed to verify detached CVD digital signatures.\n");
-    printf("                                            If not provided, then clamscan will look in:\n");
-    printf("                                            " CERTSDIR "\n");
+    printf("                                            If not provided, then clamd will look in the default directory.\n");
     printf("\n");
     printf("Environment Variables:\n");
     printf("\n");
@@ -597,8 +596,8 @@ int main(int argc, char **argv)
             // (which would've used the env var or hardcoded path)
             if (LSTAT(cvdcertsdir, &statbuf) == -1) {
                 logg(LOGG_ERROR,
-                     "ClamAV CA certificates directory is missing: %s\n"
-                     "It should have been provided as a part of installation.",
+                     "ClamAV CA certificates directory is missing: %s"
+                     " - It should have been provided as a part of installation.\n",
                      cvdcertsdir);
                 ret = 1;
                 break;

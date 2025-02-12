@@ -202,8 +202,7 @@ static void help(void)
     printf("    --update-db=DBNAME                   Only update database DBNAME\n");
     printf("    --cvdcertsdir=DIRECTORY              Specify a directory containing the root\n");
     printf("                                         CA cert needed to verify detached CVD digital signatures.\n");
-    printf("                                         If not provided, then clamscan will look in:\n");
-    printf("                                         " CERTSDIR "\n");
+    printf("                                         If not provided, then freshclam will look in the default directory.\n");
     printf("\n");
     printf("Environment Variables:\n");
     printf("\n");
@@ -225,7 +224,7 @@ static void help(void)
     printf("                                         set and the PEM file is password protected.\n");
     printf("    CVD_CERTS_DIR                        Specify a directory containing the root CA cert needed\n");
     printf("                                         to verify detached CVD digital signatures.\n");
-    printf("                                         If not provided, then clamd will look in the default directory.\n");
+    printf("                                         If not provided, then freshclam will look in the default directory.\n");
     printf("\n");
 }
 
@@ -661,7 +660,7 @@ static fc_error_t get_database_server_list(
             char *serverUrl = NULL;
 
             if (FC_SUCCESS != (ret = get_server_node(opt->strarg, "https", &serverUrl))) {
-                mprintf(LOGG_ERROR, "get_database_server_list: Failed to parse DatabaseMirror server %s.", opt->strarg);
+                mprintf(LOGG_ERROR, "get_database_server_list: Failed to parse DatabaseMirror server %s.\n", opt->strarg);
                 status = ret;
                 goto done;
             }
@@ -828,14 +827,14 @@ static fc_error_t initialize(struct optstruct *opts)
 
         // If not, use the default value
         if (NULL == fcConfig.certsDirectory) {
-            fcConfig.certsDirectory = CERTSDIR;
+            fcConfig.certsDirectory = OPT_CERTSDIR;
         }
     }
 
     if (LSTAT(fcConfig.certsDirectory, &statbuf) == -1) {
         logg(LOGG_ERROR,
-             "ClamAV CA certificates directory is missing: %s\n"
-             "It should have been provided as a part of installation.",
+             "ClamAV CA certificates directory is missing: %s"
+             " - It should have been provided as a part of installation.\n",
              fcConfig.certsDirectory);
 
         status = FC_EDIRECTORY;

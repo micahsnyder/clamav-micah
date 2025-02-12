@@ -1258,8 +1258,8 @@ int scanmanager(const struct optstruct *opts)
         // (which would've used the env var or hardcoded path)
         if (LSTAT(cvdcertsdir, &statbuf) == -1) {
             logg(LOGG_ERROR,
-                 "ClamAV CA certificates directory is missing: %s\n"
-                 "It should have been provided as a part of installation.",
+                 "ClamAV CA certificates directory is missing: %s"
+                 " - It should have been provided as a part of installation.\n",
                  cvdcertsdir);
             ret = 2;
             goto done;

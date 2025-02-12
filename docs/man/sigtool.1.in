@@ -198,7 +198,7 @@ The username to authenticate with the signing server when building a signed CVD 
 The password to authenticate with the signing server when building a signed CVD database.
 .TP
 \fBCVD_CERTS_DIR\fR
-Specify a directory containing the root CA cert needed to verify detached CVD digital signatures. If not provided, then clamd will look in the default directory.
+Specify a directory containing the root CA cert needed to verify detached CVD digital signatures. If not provided, then sigtool will look in the default directory.
 
 .SH "EXAMPLES"
 .LP

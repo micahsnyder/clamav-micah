@@ -2639,9 +2639,7 @@ fc_error_t updatedb(
 
     /* If we just updated from a CVD to a CLD, delete the old CVD */
     if ((NULL != localFilename) && strcmp(newLocalFilename, localFilename)) {
-        if (unlink(localFilename)) {
-            logg(LOGG_WARNING, "updatedb: Can't delete the old database file %s. Please remove it manually.\n", localFilename);
-        }
+        (void)unlink(localFilename);
     }
 
     /* Parse header to record number of sigs. */
