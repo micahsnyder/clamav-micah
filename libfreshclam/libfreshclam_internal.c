@@ -2638,7 +2638,7 @@ fc_error_t updatedb(
     }
 
     /* If we just updated from a CVD to a CLD, delete the old CVD */
-    if ((NULL != localFilename) && !access(localFilename, R_OK) && strcmp(newLocalFilename, localFilename)) {
+    if ((NULL != localFilename) && strcmp(newLocalFilename, localFilename)) {
         if (unlink(localFilename)) {
             logg(LOGG_WARNING, "updatedb: Can't delete the old database file %s. Please remove it manually.\n", localFilename);
         }
