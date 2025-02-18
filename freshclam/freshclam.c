@@ -831,16 +831,6 @@ static fc_error_t initialize(struct optstruct *opts)
         }
     }
 
-    if (LSTAT(fcConfig.certsDirectory, &statbuf) == -1) {
-        logg(LOGG_ERROR,
-             "ClamAV CA certificates directory is missing: %s"
-             " - It should have been provided as a part of installation.\n",
-             fcConfig.certsDirectory);
-
-        status = FC_EDIRECTORY;
-        goto done;
-    }
-
 #ifdef HAVE_PWD_H
     /* Drop database privileges here if we are not planning on daemonizing.  If
      * we are, we should wait until after we create the PidFile to drop

@@ -28,6 +28,12 @@ use std::{
 
 use log::warn;
 
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("Null Parameter: {0}")]
+    NullParameter(String),
+}
+
 /// Wraps a call to a "result-returning function", allowing it to specify an
 /// error receiver and (optionally) result receiver.
 ///
@@ -334,11 +340,12 @@ macro_rules! validate_str_param {
     };
 
     ($ptr:ident, err=$err:ident) => {
-        if $err.is_null() {
-            warn!("{} is NULL", stringify!($err));
-            return false;
-        } else if $ptr.is_null() {
+        if $ptr.is_null() {
             warn!("{} is NULL", stringify!($ptr));
+
+            *$err = Box::into_raw(Box::new(
+                crate::ffi_util::Error::NullParameter(stringify!($ptr).to_string()).into(),
+            ));
             return false;
         } else {
             #[allow(unused_unsafe)]

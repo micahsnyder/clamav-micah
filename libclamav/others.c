@@ -79,6 +79,10 @@
 #include "json_api.h"
 #include "mpool.h"
 
+#ifdef _WIN32
+#include "libgen.h"
+#endif
+
 #include "clamav_rust.h"
 
 cl_unrar_error_t (*cli_unrar_open)(const char *filename, void **hArchive, char **comment, uint32_t *comment_size, uint8_t debug_flag);
@@ -446,14 +450,16 @@ cl_error_t cl_init(unsigned int initoptions)
 
 struct cl_engine *cl_engine_new(void)
 {
-    struct cl_engine *new;
-    cli_intel_t *intel;
-    char *cvdcertsdir = NULL;
+    cl_error_t status = CL_ERROR;
+
+    struct cl_engine *new = NULL;
+    cli_intel_t *intel    = NULL;
+    char *cvdcertsdir     = NULL;
 
     new = (struct cl_engine *)calloc(1, sizeof(struct cl_engine));
     if (!new) {
         cli_errmsg("cl_engine_new: Can't allocate memory for cl_engine\n");
-        return NULL;
+        goto done;
     }
 
     /* Setup default limits */
@@ -484,55 +490,32 @@ struct cl_engine *cl_engine_new(void)
 #ifdef USE_MPOOL
     if (!(new->mempool = mpool_create())) {
         cli_errmsg("cl_engine_new: Can't allocate memory for memory pool\n");
-        free(new);
-        return NULL;
+        goto done;
     }
 #endif
 
     new->root = MPOOL_CALLOC(new->mempool, CLI_MTARGETS, sizeof(struct cli_matcher *));
     if (!new->root) {
         cli_errmsg("cl_engine_new: Can't allocate memory for roots\n");
-#ifdef USE_MPOOL
-        mpool_destroy(new->mempool);
-#endif
-        free(new);
-        return NULL;
+        goto done;
     }
 
     new->dconf = cli_mpool_dconf_init(new->mempool);
     if (!new->dconf) {
         cli_errmsg("cl_engine_new: Can't initialize dynamic configuration\n");
-        MPOOL_FREE(new->mempool, new->root);
-#ifdef USE_MPOOL
-        mpool_destroy(new->mempool);
-#endif
-        free(new);
-        return NULL;
+        goto done;
     }
 
     new->pwdbs = MPOOL_CALLOC(new->mempool, CLI_PWDB_COUNT, sizeof(struct cli_pwdb *));
     if (!new->pwdbs) {
         cli_errmsg("cl_engine_new: Can't initialize password databases\n");
-        MPOOL_FREE(new->mempool, new->dconf);
-        MPOOL_FREE(new->mempool, new->root);
-#ifdef USE_MPOOL
-        mpool_destroy(new->mempool);
-#endif
-        free(new);
-        return NULL;
+        goto done;
     }
 
     crtmgr_init(&(new->cmgr));
     if (crtmgr_add_roots(new, &(new->cmgr), 0)) {
         cli_errmsg("cl_engine_new: Can't initialize root certificates\n");
-        MPOOL_FREE(new->mempool, new->pwdbs);
-        MPOOL_FREE(new->mempool, new->dconf);
-        MPOOL_FREE(new->mempool, new->root);
-#ifdef USE_MPOOL
-        mpool_destroy(new->mempool);
-#endif
-        free(new);
-        return NULL;
+        goto done;
     }
 
     /* Set up default stats/intel gathering callbacks */
@@ -541,15 +524,7 @@ struct cl_engine *cl_engine_new(void)
 #ifdef CL_THREAD_SAFE
         if (pthread_mutex_init(&(intel->mutex), NULL)) {
             cli_errmsg("cli_engine_new: Cannot initialize stats gathering mutex\n");
-            MPOOL_FREE(new->mempool, new->pwdbs);
-            MPOOL_FREE(new->mempool, new->dconf);
-            MPOOL_FREE(new->mempool, new->root);
-#ifdef USE_MPOOL
-            mpool_destroy(new->mempool);
-#endif
-            free(new);
-            free(intel);
-            return NULL;
+            goto done;
         }
 #endif
         intel->engine     = new;
@@ -587,15 +562,7 @@ struct cl_engine *cl_engine_new(void)
     /* YARA */
     if (cli_yara_init(new) != CL_SUCCESS) {
         cli_errmsg("cli_engine_new: failed to initialize YARA\n");
-        MPOOL_FREE(new->mempool, new->pwdbs);
-        MPOOL_FREE(new->mempool, new->dconf);
-        MPOOL_FREE(new->mempool, new->root);
-#ifdef USE_MPOOL
-        mpool_destroy(new->mempool);
-#endif
-        free(new);
-        free(intel);
-        return NULL;
+        goto done;
     }
 
 #endif
@@ -607,14 +574,62 @@ struct cl_engine *cl_engine_new(void)
     } else {
 #ifdef _WIN32
         // On Windows, CERTSDIR is NOT defined in clamav-config.h.
-        // We'll leave it uninitialized and then it must be initialized later by the application.
-        new->certs_directory = NULL;
+        // So instead we'll use the certs directory next to the module file.
+        char module_path[MAX_PATH]     = "";
+        char certs_directory[MAX_PATH] = "";
+        char *dir;
+        DWORD get_module_name_ret;
+
+        get_module_name_ret = GetModuleFileNameA(NULL, module_path, sizeof(module_path));
+        if (0 == get_module_name_ret) {
+            cli_errmsg("cl_engine_new: Can't get module file name\n");
+            goto done;
+        }
+
+        // Ensure null-termination before using dirname()
+        module_path[sizeof(module_path) - 1] = '\0';
+        dir                                  = dirname(module_path);
+
+        // set the certs directory to be the module directory + certs
+        snprintf(certs_directory, sizeof(certs_directory), "%s\\certs", dir);
+
+        new->certs_directory = CLI_MPOOL_STRDUP(new->mempool, certs_directory);
 #else
         new->certs_directory = CLI_MPOOL_STRDUP(new->mempool, CERTSDIR);
 #endif
     }
 
+    status = CL_SUCCESS;
     cli_dbgmsg("Initialized %s engine\n", cl_retver());
+
+done:
+    if (CL_SUCCESS != status) {
+        if (NULL != new) {
+            if (NULL != new->mempool) {
+                if (NULL != new->certs_directory) {
+                    MPOOL_FREE(new->mempool, new->certs_directory);
+                }
+                if (NULL != new->pwdbs) {
+                    MPOOL_FREE(new->mempool, new->pwdbs);
+                }
+                if (NULL != new->dconf) {
+                    MPOOL_FREE(new->mempool, new->dconf);
+                }
+                if (NULL != new->root) {
+                    MPOOL_FREE(new->mempool, new->root);
+                }
+#ifdef USE_MPOOL
+                mpool_destroy(new->mempool);
+#endif
+            }
+            free(new);
+            new = NULL;
+        }
+        if (NULL != intel) {
+            free(intel);
+        }
+    }
+
     return new;
 }
 

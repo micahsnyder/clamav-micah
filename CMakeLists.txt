@@ -1083,6 +1083,8 @@ if(NOT ENABLE_LIBCLAMAV_ONLY)
         else()
             add_subdirectory( etc )
         endif()
+
+        add_subdirectory( certs )
     endif()
 endif()
 

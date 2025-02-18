@@ -4,9 +4,9 @@
 # Copyright (C) 2021-2024 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
 #
 
+# The Rust openssl-sys crate needs to know how to find the OpenSSL headers and libraries.
 get_filename_component(OPENSSL_DIR "${OPENSSL_INCLUDE_DIR}" DIRECTORY)
 
-# The Rust openssl-sys crate needs to know how to find the OpenSSL headers and libraries.
 set(OPENSSL_LIBS "")
 foreach(LIB IN LISTS OPENSSL_LIBRARIES)
     # Skip any libraries starting with `-l` (e.g. -lpthread).

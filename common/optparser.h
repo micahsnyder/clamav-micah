@@ -60,10 +60,6 @@
 
 #else /* !_WIN32 */
 
-    #define CONFDIR_CLAMD
-    #define CONFDIR_FRESHCLAM
-    #define CONFDIR_MILTER
-
     #define OPT_DATADIR           DATADIR
     #define OPT_CONFDIR           CONFDIR
     #define OPT_CERTSDIR          CERTSDIR

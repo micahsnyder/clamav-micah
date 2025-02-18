@@ -2403,13 +2403,13 @@ fc_error_t updatedb(
      */
 
     // Create a temp file for the new database.
-    tmpfile = calloc(1, strlen(g_tempDirectory) + strlen("/") + strlen(remoteFilename) + 1);
+    tmpfile = calloc(1, strlen(g_tempDirectory) + strlen(PATHSEP) + strlen(remoteFilename) + 1);
     if (!tmpfile) {
         status = FC_EMEM;
         goto done;
     }
-    snprintf(tmpfile, strlen(g_tempDirectory) + strlen("/") + strlen(remoteFilename) + 1,
-             "%s/%s", g_tempDirectory, remoteFilename);
+    snprintf(tmpfile, strlen(g_tempDirectory) + strlen(PATHSEP) + strlen(remoteFilename) + 1,
+             "%s" PATHSEP "%s", g_tempDirectory, remoteFilename);
 
     if ((localVersion == 0) || (!bScriptedUpdates)) {
         /*

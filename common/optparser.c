@@ -101,12 +101,12 @@
 
 #else
 
-    #define CONST_DATADIR           DATADIR
-    #define CONST_CONFDIR           CONFDIR
-    #define CONST_CERTSDIR          CERTSDIR
-    #define CONST_CONFDIR_CLAMD     CONFDIR_CLAMD
-    #define CONST_CONFDIR_FRESHCLAM CONFDIR_FRESHCLAM
-    #define CONST_CONFDIR_MILTER    CONFDIR_MILTER
+    #define CONST_DATADIR           OPT_DATADIR
+    #define CONST_CONFDIR           OPT_CONFDIR
+    #define CONST_CERTSDIR          OPT_CERTSDIR
+    #define CONST_CONFDIR_CLAMD     OPT_CONFDIR_CLAMD
+    #define CONST_CONFDIR_FRESHCLAM OPT_CONFDIR_FRESHCLAM
+    #define CONST_CONFDIR_MILTER    OPT_CONFDIR_MILTER
 
 #endif
 
@@ -738,7 +738,7 @@ static void fix_paths(void)
             have_conf_dir = true;
         }
         if (!have_certs_dir) {
-            strncpy(_CERTSDIR, dir, sizeof(_CERTSDIR));
+            snprintf(_CERTSDIR, sizeof(_CERTSDIR), "%s\\certs", dir);
         }
     }
 

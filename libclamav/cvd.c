@@ -428,14 +428,6 @@ cl_error_t cl_cvdverify_ex(const char *file, const char *certs_directory)
     }
     engine->cb_stats_submit = NULL; /* Don't submit stats if we're just verifying a CVD */
 
-    if (NULL != certs_directory) {
-        ret = cl_engine_set_str(engine, CL_ENGINE_CVDCERTSDIR, certs_directory);
-        if (CL_SUCCESS != ret) {
-            cli_errmsg("cl_cvdverify: Failed to set engine certs directory\n");
-            goto done;
-        }
-    }
-
     if (!!cli_strbcasestr(file, ".cvd")) {
         dbtype = CVD_TYPE_CVD;
     } else if (!!cli_strbcasestr(file, ".cld")) {
@@ -448,10 +440,18 @@ cl_error_t cl_cvdverify_ex(const char *file, const char *certs_directory)
         goto done;
     }
 
-    if (!codesign_verifier_new(engine->certs_directory, &verifier, &new_verifier_error)) {
-        cli_errmsg("cl_cvdverify: Failed to create a new code-signature verifier: %s\n", ffierror_fmt(new_verifier_error));
-        ret = CL_ECVD;
-        goto done;
+    if (NULL != certs_directory) {
+        ret = cl_engine_set_str(engine, CL_ENGINE_CVDCERTSDIR, certs_directory);
+        if (CL_SUCCESS != ret) {
+            cli_errmsg("cl_cvdverify: Failed to set engine certs directory\n");
+            goto done;
+        }
+
+        if (!codesign_verifier_new(engine->certs_directory, &verifier, &new_verifier_error)) {
+            cli_errmsg("cl_cvdverify: Failed to create a new code-signature verifier: %s\n", ffierror_fmt(new_verifier_error));
+            ret = CL_EVERIFY;
+            goto done;
+        }
     }
 
     ret = cli_cvdload(engine, NULL, CL_DB_STDOPT | CL_DB_PUA, dbtype, file, verifier, 1);

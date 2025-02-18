@@ -5303,11 +5303,13 @@ cl_error_t cl_load(const char *path, struct cl_engine *engine, unsigned int *sig
 
     engine->dboptions |= dboptions;
 
-    if (!codesign_verifier_new(engine->certs_directory, &sign_verifier, &new_verifier_error)) {
-        cli_errmsg("Failed to create a new code-signature verifier: %s\n", ffierror_fmt(new_verifier_error));
-        ffierror_free(new_verifier_error);
-        ret = CL_ECVD;
-        return ret;
+    if (NULL != engine->certs_directory) {
+        if (!codesign_verifier_new(engine->certs_directory, &sign_verifier, &new_verifier_error)) {
+            cli_errmsg("Failed to create a new code-signature verifier: %s\n", ffierror_fmt(new_verifier_error));
+            ffierror_free(new_verifier_error);
+            ret = CL_ECVD;
+            return ret;
+        }
     }
 
     switch (sb.st_mode & S_IFMT) {
@@ -5324,11 +5326,15 @@ cl_error_t cl_load(const char *path, struct cl_engine *engine, unsigned int *sig
 
         default:
             cli_errmsg("cl_load(%s): Not supported database file type\n", path);
-            codesign_verifier_free(sign_verifier);
+            if (sign_verifier) {
+                codesign_verifier_free(sign_verifier);
+            }
             return CL_EOPEN;
     }
 
-    codesign_verifier_free(sign_verifier);
+    if (sign_verifier) {
+        codesign_verifier_free(sign_verifier);
+    }
 
     if (engine->cb_sigload_progress) {
         /* Let the progress callback function know we're done! */
